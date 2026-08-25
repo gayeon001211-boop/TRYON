@@ -53,7 +53,11 @@ export function pickPoints(lm, w, h) {
  */
 export async function embed(image) {
   const { model, processor } = await loadSam();
-  const raw = image instanceof RawImage ? image : await RawImage.read(image);
+  // a Blob/File is the browser path; RawImage.read only understands urls and paths,
+  // and throws "Unsupported input type" on an <img> element
+  const raw = image instanceof RawImage ? image
+    : image instanceof Blob ? await RawImage.fromBlob(image)
+    : await RawImage.read(image);
   const inputs = await processor(raw);
   return { inputs, embeddings: await model.get_image_embeddings(inputs), model, processor };
 }

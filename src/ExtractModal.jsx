@@ -13,7 +13,8 @@ export default function ExtractModal({ file, onDone, onCancel }) {
   const imgRef = useRef(null);
   const ctxRef = useRef(null);                   // encoded image, reused for every click
   const [url] = useState(() => URL.createObjectURL(file));
-  const [stage, setStage] = useState('model');   // model | encode | cut | idle
+  const [stage, setStage] = useState('model');   // model | encode | cut | idle | error
+  const [error, setError] = useState('');
   const [pct, setPct] = useState(0);
   const [secs, setSecs] = useState(0);
   const [points, setPoints] = useState(null);
@@ -25,7 +26,7 @@ export default function ExtractModal({ file, onDone, onCancel }) {
 
   // a ticking clock, so a slow step never looks like a frozen one
   useEffect(() => {
-    if (stage === 'idle') return;
+    if (stage === 'idle' || stage === 'error') return;
     const t0 = performance.now();
     const id = setInterval(() => setSecs((performance.now() - t0) / 1000), 100);
     return () => clearInterval(id);
@@ -33,24 +34,29 @@ export default function ExtractModal({ file, onDone, onCancel }) {
 
   async function onLoad() {
     const img = imgRef.current;
-    const { loadSam, embed, pickPoints } = await sam();
+    try {
+      const { loadSam, embed, pickPoints } = await sam();
 
-    setStage('model');
-    const [, lm] = await Promise.all([
-      loadSam(p => setPct(p)),
-      detectInImage(img).catch(() => null),
-    ]);
+      setStage('model');
+      const [, lm] = await Promise.all([
+        loadSam(p => setPct(p)),
+        detectInImage(img).catch(() => null),
+      ]);
 
-    setBackend((await sam()).backend);
-    setStage('encode');
-    ctxRef.current = await embed(img);
+      setBackend((await sam()).backend);
+      setStage('encode');
+      ctxRef.current = await embed(file);
 
-    if (lm) {
-      const p = poseFromEyes(lm[33], lm[263], img.naturalWidth, img.naturalHeight);
-      setFace({ eyeSpan: p.eyeSpan, eyeY: p.cy });
-      setPoints(pickPoints(lm, img.naturalWidth, img.naturalHeight));
-    } else {
-      setStage('idle');
+      if (lm) {
+        const p = poseFromEyes(lm[33], lm[263], img.naturalWidth, img.naturalHeight);
+        setFace({ eyeSpan: p.eyeSpan, eyeY: p.cy });
+        setPoints(pickPoints(lm, img.naturalWidth, img.naturalHeight));
+      } else {
+        setStage('idle');
+      }
+    } catch (e) {
+      setError(String(e.message || e));
+      setStage('error');
     }
   }
 
@@ -59,6 +65,7 @@ export default function ExtractModal({ file, onDone, onCancel }) {
     if (!points?.length || !ctxRef.current) return;
     let stale = false;
     (async () => {
+      try {
       setStage('cut');
       const { segment } = await sam();
       const img = imgRef.current;
@@ -72,12 +79,13 @@ export default function ExtractModal({ file, onDone, onCancel }) {
         yRatio: face ? (t.y + t.canvas.height / 2 - face.eyeY) / span : -0.09,
       });
       setStage('idle');
+      } catch (e) { setError(String(e.message || e)); setStage('error'); }
     })();
     return () => { stale = true; };
   }, [points, face]);
 
   const addPoint = e => {
-    if (stage === 'model' || stage === 'encode') return;
+    if (stage !== 'idle') return;
     const img = imgRef.current, r = img.getBoundingClientRect();
     const k = img.naturalWidth / r.width;
     const p = [(e.clientX - r.left) * k, (e.clientY - r.top) * k];
@@ -99,15 +107,16 @@ export default function ExtractModal({ file, onDone, onCancel }) {
     cut: '03. cutting the glasses out',
     idle: points ? 'wrong bit? click to add a point, alt-click to exclude.'
                  : 'no face found — click on the glasses.',
+    error: 'it broke: ' + error,
   }[stage];
 
   return (
     <div className="overlay">
       <div className="panel">
-        <h2>{stage === 'idle' ? 'your frame' : 'building your frame'}</h2>
-        <p className="hint">{note} {stage !== 'idle' && <b>{secs.toFixed(1)}s</b>}</p>
+        <h2>{stage === 'idle' ? 'your frame' : stage === 'error' ? 'that did not work' : 'building your frame'}</h2>
+        <p className="hint">{note} {stage !== 'idle' && stage !== 'error' && <b>{secs.toFixed(1)}s</b>}</p>
         <div className="bar">
-          <i className={stage === 'model' ? '' : stage === 'idle' ? 'done' : 'busy'}
+          <i className={stage === 'model' ? '' : stage === 'idle' || stage === 'error' ? 'done' : 'busy'}
              style={{ width: stage === 'model' ? `${pct * 100}%` : '100%' }} />
         </div>
 
@@ -118,7 +127,7 @@ export default function ExtractModal({ file, onDone, onCancel }) {
 
         <div className="preview">
           {cut ? <img alt="extracted frame" src={cut.canvas.toDataURL()} />
-               : <span className="hint">{stage === 'idle' ? 'nothing found yet' : 'working…'}</span>}
+               : <span className="hint">{stage === 'idle' || stage === 'error' ? 'nothing found yet' : 'working…'}</span>}
         </div>
 
         <div className="row">
