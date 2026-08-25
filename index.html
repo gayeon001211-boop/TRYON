@@ -1,0 +1,338 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>TRYON — Find it. Try it on.</title>
+<style>
+  :root { --bg:#0b0b0c; --fg:#f2f0eb; --dim:#6f6d68; --line:#26262a; --hot:#e8ff45; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--fg); font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+         letter-spacing:.08em; text-transform:uppercase; height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid var(--line); }
+  header b { font-size:15px; letter-spacing:.3em; }
+  .dot { color:var(--hot); }
+  main { flex:1; display:grid; grid-template-columns:210px 1fr 230px; min-height:0; }
+  aside { padding:16px; overflow:auto; }
+  aside:first-child { border-right:1px solid var(--line); }
+  aside:last-child { border-left:1px solid var(--line); }
+  h2 { font-size:10px; color:var(--dim); font-weight:400; margin-bottom:12px; }
+  .stage { position:relative; display:flex; align-items:center; justify-content:center; background:#000; overflow:hidden; }
+  canvas#view { max-width:100%; max-height:100%; }
+  .frames { display:grid; gap:8px; }
+  .chip { border:1px solid var(--line); background:none; color:var(--fg); font:inherit; text-transform:inherit;
+          letter-spacing:inherit; padding:10px; cursor:pointer; display:flex; align-items:center; gap:8px; }
+  .chip:hover { border-color:var(--fg); }
+  .chip.on { border-color:var(--hot); color:var(--hot); }
+  .chip canvas, .chip img { width:44px; height:22px; object-fit:contain; }
+  button.big { width:100%; padding:12px; border:1px solid var(--fg); background:var(--fg); color:#000;
+               font:inherit; text-transform:inherit; letter-spacing:inherit; cursor:pointer; }
+  button.ghost { background:none; color:var(--fg); }
+  .sw { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:16px; }
+  .sw span { width:22px; height:22px; border-radius:50%; cursor:pointer; border:2px solid transparent; }
+  .sw span.on { border-color:var(--hot); }
+  label { display:block; color:var(--dim); font-size:10px; margin:10px 0 2px; display:flex; justify-content:space-between; }
+  input[type=range] { width:100%; accent-color:var(--hot); }
+  .overlay { position:fixed; inset:0; background:#0b0b0ce6; display:none; align-items:center; justify-content:center; padding:30px; }
+  .overlay.on { display:flex; }
+  .panel { border:1px solid var(--line); background:var(--bg); padding:20px; max-width:min(90vw,760px); max-height:90vh; overflow:auto; }
+  .cropbox { position:relative; display:inline-block; cursor:crosshair; margin:14px 0; }
+  .cropbox img { max-width:100%; max-height:52vh; display:block; }
+  .sel { position:absolute; border:1px solid var(--hot); background:#e8ff4520; pointer-events:none; }
+  .bar { height:6px; background:var(--line); margin:4px 0 12px; }
+  .bar i { display:block; height:100%; background:var(--hot); width:0; transition:width .35s linear; }
+  .hint { color:var(--dim); font-size:10px; }
+  .row { display:flex; gap:8px; margin-top:12px; }
+</style>
+
+<header>
+  <b>TRYON</b>
+  <span class="hint">find it. try it on.</span>
+  <span id="camstat" class="hint">● camera off</span>
+</header>
+
+<main>
+  <aside>
+    <h2>my frames</h2>
+    <div class="frames" id="frames"></div>
+    <div class="row"><button class="big ghost" id="upload">+ upload image</button></div>
+    <input type="file" id="file" accept="image/*" hidden>
+  </aside>
+
+  <div class="stage">
+    <video id="cam" playsinline muted hidden></video>
+    <canvas id="view"></canvas>
+    <div id="startwrap" style="position:absolute"><button class="big" id="start">turn on camera</button></div>
+  </div>
+
+  <aside>
+    <h2>frame color</h2>
+    <div class="sw" id="fcolors"></div>
+    <h2>lens</h2>
+    <div class="sw" id="lcolors"></div>
+    <h2>fit</h2>
+    <label>width <b id="vw"></b></label><input type="range" id="fw" min="1.1" max="2.2" step="0.01" value="1.55">
+    <label>height <b id="vh"></b></label><input type="range" id="fh" min="0.6" max="1.6" step="0.01" value="1">
+    <label>position <b id="vy"></b></label><input type="range" id="fy" min="-0.5" max="0.5" step="0.01" value="-0.06">
+    <label>rotation <b id="vr"></b></label><input type="range" id="fr" min="-15" max="15" step="0.5" value="0">
+    <div class="row"><button class="big" id="wear">try on</button></div>
+  </aside>
+</main>
+
+<div class="overlay" id="modal"><div class="panel">
+  <h2 id="mtitle">select your frame</h2>
+  <div id="step1">
+    <p class="hint">drag a box around the glasses you want.</p>
+    <div class="cropbox" id="cropbox"><img id="src"><div class="sel" id="sel" hidden></div></div>
+    <label>background cut <b id="vt"></b></label><input type="range" id="tol" min="10" max="140" step="1" value="60">
+    <div class="row">
+      <button class="big" id="extract">extract frame</button>
+      <button class="big ghost" id="cancel">cancel</button>
+    </div>
+  </div>
+  <div id="step2" hidden>
+    <p>01. detecting shape</p><div class="bar"><i id="b1"></i></div>
+    <p>02. analyzing color</p><div class="bar"><i id="b2"></i></div>
+    <p>03. building model</p><div class="bar"><i id="b3"></i></div>
+    <canvas id="preview" style="max-width:100%"></canvas>
+  </div>
+</div></div>
+
+<script type="module">
+import { FilesetResolver, FaceLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import { poseFromEyes, sampleCorners, keyOut } from "./frame.js";
+
+const $ = id => document.getElementById(id);
+const FRAME_COLORS = ['#111111', '#c98b2e', '#b9bcc0', '#a92b2b', '#2f4f9b', '#f0ece2'];
+const LENS_COLORS = ['#ffffff10', '#3a3a3a80', '#6b4a2280', '#2b4d8c80', '#00000000'];
+
+const state = {
+  frames: [
+    { id: 'round', name: 'round', shape: 'round' },
+    { id: 'square', name: 'square', shape: 'square' },
+    { id: 'cat', name: 'cat-eye', shape: 'cat' },
+  ],
+  activeId: 'round',
+  frameColor: FRAME_COLORS[0],
+  lensColor: LENS_COLORS[0],
+  worn: false,
+  wear: 0,          // 0 = in the collection, 1 = on the face
+};
+const fit = { w: 1.55, h: 1, y: -0.06, r: 0 };
+const active = () => state.frames.find(f => f.id === state.activeId);
+
+/* ---------- drawing ---------- */
+// Everything is drawn in a unit space: total frame width 1, centred on the eyes.
+function lensPath(ctx, shape, sx) {
+  ctx.beginPath();
+  if (shape === 'round') ctx.ellipse(sx * 0.28, 0, 0.2, 0.17, 0, 0, Math.PI * 2);
+  else if (shape === 'square') roundRect(ctx, sx * 0.28 - 0.21, -0.15, 0.42, 0.3, 0.05);
+  else { // cat-eye: outer top corner lifted
+    const cx = sx * 0.28;
+    ctx.moveTo(cx - sx * 0.21, -0.19);
+    ctx.quadraticCurveTo(cx + sx * 0.21, -0.15, cx + sx * 0.2, -0.02);
+    ctx.quadraticCurveTo(cx + sx * 0.15, 0.17, cx - sx * 0.05, 0.15);
+    ctx.quadraticCurveTo(cx - sx * 0.22, 0.1, cx - sx * 0.21, -0.19);
+  }
+  ctx.closePath();
+}
+function roundRect(ctx, x, y, w, h, r) { ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+
+function drawVector(ctx, shape, frameColor, lensColor) {
+  ctx.lineWidth = 0.035; ctx.lineJoin = ctx.lineCap = 'round'; ctx.strokeStyle = frameColor;
+  for (const sx of [-1, 1]) {
+    lensPath(ctx, shape, sx);
+    ctx.fillStyle = lensColor; ctx.fill(); ctx.stroke();
+  }
+  ctx.beginPath(); ctx.moveTo(-0.08, -0.05); ctx.quadraticCurveTo(0, -0.11, 0.08, -0.05); ctx.stroke();
+  for (const sx of [-1, 1]) {
+    ctx.beginPath(); ctx.moveTo(sx * 0.48, -0.1); ctx.lineTo(sx * 0.56, -0.06); ctx.stroke();
+  }
+}
+
+// image frames are tinted through an offscreen cache so the tint stays inside the cut-out
+const tintCache = new Map();
+function tinted(frame, color) {
+  const key = frame.id + color;
+  if (tintCache.has(key)) return tintCache.get(key);
+  const src = frame.canvas, c = document.createElement('canvas');
+  c.width = src.width; c.height = src.height;
+  const x = c.getContext('2d');
+  x.drawImage(src, 0, 0);
+  x.globalCompositeOperation = 'source-atop';
+  x.globalAlpha = 0.45; x.fillStyle = color; x.fillRect(0, 0, c.width, c.height);
+  tintCache.set(key, c);
+  return c;
+}
+
+function drawFrame(ctx, frame, pose, alpha = 1) {
+  const s = pose.eyeSpan * fit.w;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(pose.cx, pose.cy);
+  ctx.rotate(pose.angle + fit.r * Math.PI / 180);
+  ctx.translate(0, fit.y * s);
+  ctx.scale(s, s * fit.h);
+  if (frame.canvas) {
+    const img = tinted(frame, state.frameColor), ar = img.height / img.width;
+    ctx.drawImage(img, -0.5, -ar / 2, 1, ar);
+  } else {
+    drawVector(ctx, frame.shape, state.frameColor, state.lensColor);
+  }
+  ctx.restore();
+}
+
+/* ---------- camera + tracking ---------- */
+const view = $('view'), ctx = view.getContext('2d'), cam = $('cam');
+let landmarker = null, lastPose = null;
+
+$('start').onclick = async () => {
+  $('start').textContent = 'starting…';
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+  cam.srcObject = stream; await cam.play();
+  view.width = cam.videoWidth; view.height = cam.videoHeight;
+  $('startwrap').remove(); $('camstat').innerHTML = '<span class="dot">●</span> camera on';
+  const files = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  landmarker = await FaceLandmarker.createFromOptions(files, {
+    baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task", delegate: "GPU" },
+    runningMode: "VIDEO", numFaces: 1,
+  });
+  requestAnimationFrame(loop);
+};
+
+function loop(t) {
+  requestAnimationFrame(loop);
+  if (cam.readyState < 2) return;
+  ctx.save(); ctx.translate(view.width, 0); ctx.scale(-1, 1);   // selfie view
+  ctx.drawImage(cam, 0, 0, view.width, view.height); ctx.restore();
+
+  const res = landmarker?.detectForVideo(cam, t);
+  const lm = res?.faceLandmarks?.[0];
+  if (lm) {
+    const mirror = p => ({ x: 1 - p.x, y: p.y });
+    lastPose = poseFromEyes(mirror(lm[33]), mirror(lm[263]), view.width, view.height);
+  }
+  state.wear += ((state.worn ? 1 : 0) - state.wear) * 0.18;    // ease between collection and face
+  if (lastPose && state.wear > 0.01) {
+    const home = { cx: -view.width * 0.1, cy: view.height / 2, angle: 0, eyeSpan: lastPose.eyeSpan };
+    const k = state.wear, mix = (a, b) => a + (b - a) * k;
+    drawFrame(ctx, active(), {
+      cx: mix(home.cx, lastPose.cx), cy: mix(home.cy, lastPose.cy),
+      angle: mix(0, lastPose.angle), eyeSpan: lastPose.eyeSpan,
+    }, k);
+  }
+  if (!lm && landmarker) {
+    ctx.fillStyle = '#6f6d68'; ctx.font = '20px monospace';
+    ctx.fillText('LOOKING FOR A FACE…', 24, 40);
+  }
+}
+
+/* ---------- collection panel ---------- */
+function thumb(frame) {
+  const c = document.createElement('canvas'); c.width = 176; c.height = 88;
+  const x = c.getContext('2d');
+  x.translate(c.width / 2, c.height / 2); x.scale(c.width, c.width);
+  if (frame.canvas) {
+    const ar = frame.canvas.height / frame.canvas.width;
+    x.drawImage(frame.canvas, -0.5, -ar / 2, 1, ar);
+  } else drawVector(x, frame.shape, '#f2f0eb', '#ffffff10');
+  return c;
+}
+function renderFrames() {
+  $('frames').replaceChildren(...state.frames.map(f => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (f.id === state.activeId ? ' on' : '');
+    b.append(thumb(f), f.name);
+    b.onclick = () => { state.activeId = f.id; renderFrames(); };
+    return b;
+  }));
+}
+function swatches(el, colors, key) {
+  el.replaceChildren(...colors.map(c => {
+    const s = document.createElement('span');
+    s.style.background = c === '#00000000' ? 'repeating-linear-gradient(45deg,#333 0 4px,#111 4px 8px)' : c;
+    s.className = state[key] === c ? 'on' : '';
+    s.onclick = () => { state[key] = c; swatches(el, colors, key); renderFrames(); };
+    return s;
+  }));
+}
+
+/* ---------- controls ---------- */
+const bind = (id, out, k, fmt) => {
+  const el = $(id);
+  const sync = () => { fit[k] = +el.value; $(out).textContent = fmt(+el.value); };
+  el.oninput = sync; sync();
+};
+bind('fw', 'vw', 'w', v => v.toFixed(2) + '×');
+bind('fh', 'vh', 'h', v => v.toFixed(2) + '×');
+bind('fy', 'vy', 'y', v => v.toFixed(2));
+bind('fr', 'vr', 'r', v => v.toFixed(1) + '°');
+$('wear').onclick = () => {
+  state.worn = !state.worn;
+  $('wear').textContent = state.worn ? 'remove glasses' : 'try on';
+};
+
+/* ---------- upload → crop → build ---------- */
+$('upload').onclick = () => $('file').click();
+$('file').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  $('src').src = URL.createObjectURL(f);
+  $('sel').hidden = true; $('step1').hidden = false; $('step2').hidden = true;
+  $('modal').classList.add('on');
+  e.target.value = '';
+};
+$('cancel').onclick = () => $('modal').classList.remove('on');
+
+let box = null;
+$('cropbox').onpointerdown = e => {
+  const r = $('src').getBoundingClientRect();
+  box = { x0: e.clientX - r.left, y0: e.clientY - r.top, x1: 0, y1: 0 };
+  $('cropbox').setPointerCapture(e.pointerId);
+};
+$('cropbox').onpointermove = e => {
+  if (!box) return;
+  const r = $('src').getBoundingClientRect();
+  box.x1 = e.clientX - r.left; box.y1 = e.clientY - r.top;
+  const s = $('sel');
+  s.hidden = false;
+  s.style.left = Math.min(box.x0, box.x1) + 'px'; s.style.top = Math.min(box.y0, box.y1) + 'px';
+  s.style.width = Math.abs(box.x1 - box.x0) + 'px'; s.style.height = Math.abs(box.y1 - box.y0) + 'px';
+};
+$('cropbox').onpointerup = () => { if (box && Math.abs(box.x1 - box.x0) > 8) box.done = true; };
+
+$('tol').oninput = e => $('vt').textContent = e.target.value;
+$('vt').textContent = $('tol').value;
+
+$('extract').onclick = async () => {
+  const img = $('src'), r = img.getBoundingClientRect();
+  const k = img.naturalWidth / r.width;                       // displayed → natural pixels
+  const sel = box && box.done
+    ? { x: Math.min(box.x0, box.x1) * k, y: Math.min(box.y0, box.y1) * k,
+        w: Math.abs(box.x1 - box.x0) * k, h: Math.abs(box.y1 - box.y0) * k }
+    : { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+  if (sel.w < 8 || sel.h < 8) return alert('drag a bigger box');
+
+  const c = document.createElement('canvas');
+  c.width = Math.round(sel.w); c.height = Math.round(sel.h);
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.drawImage(img, sel.x, sel.y, sel.w, sel.h, 0, 0, c.width, c.height);
+  const data = x.getImageData(0, 0, c.width, c.height);
+  keyOut(data.data, sampleCorners(data.data, c.width, c.height), +$('tol').value);
+  x.putImageData(data, 0, 0);
+
+  $('step1').hidden = true; $('step2').hidden = false;
+  const pv = $('preview'); pv.width = c.width; pv.height = c.height;
+  pv.getContext('2d').drawImage(c, 0, 0);
+  for (const [bar, ms] of [['b1', 350], ['b2', 400], ['b3', 500]]) {
+    $(bar).style.width = '100%';
+    await new Promise(r => setTimeout(r, ms));
+  }
+  const frame = { id: 'f' + state.frames.length + Date.now(), name: 'frame ' + (state.frames.length + 1), canvas: c };
+  state.frames.push(frame); state.activeId = frame.id;
+  renderFrames();
+  $('modal').classList.remove('on');
+  for (const b of ['b1', 'b2', 'b3']) $(b).style.width = '0';
+  box = null;
+};
+
+renderFrames();
+swatches($('fcolors'), FRAME_COLORS, 'frameColor');
+swatches($('lcolors'), LENS_COLORS, 'lensColor');
+</script>
