@@ -9,9 +9,11 @@ export let backend = '';   // what actually ran, for the UI to own up to
 export function loadSam(onProgress) {
   if (!loading) loading = (async () => {
     const progress_callback = p => p.status === 'progress' && onProgress?.(p.progress / 100);
-    // WebGPU is ~100× faster here, but only if an adapter really exists
-    const adapter = await navigator?.gpu?.requestAdapter?.().catch(() => null);
+    // WebGPU spends ~45 s compiling shaders on the first run, which is longer than
+    // threaded wasm takes to do the whole job for a model this small. ?gpu opts back in.
     const node = typeof window === 'undefined';
+    const wantGpu = !node && location.search.includes('gpu');
+    const adapter = wantGpu ? await navigator?.gpu?.requestAdapter?.().catch(() => null) : null;
     const device = adapter ? 'webgpu' : node ? 'cpu' : 'wasm';
     if (device === 'wasm') {
       env.backends.onnx.wasm.numThreads = globalThis.crossOriginIsolated
