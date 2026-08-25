@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { poseFromEyes, sampleCorners, keyOut } from './frame.js';
+import { poseFromEyes, sampleCorners, keyOut } from './src/frame.js';
 
 // eyes level, 100px apart in a 200x100 frame
 let p = poseFromEyes({ x: 0.25, y: 0.5 }, { x: 0.75, y: 0.5 }, 200, 100);
