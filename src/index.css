@@ -40,3 +40,6 @@ input[type=range] { width:100%; accent-color:var(--hot); }
            border:1px solid var(--line); margin:14px 0; padding:10px; min-height:70px;
            display:flex; align-items:center; justify-content:center; }
 .preview img { max-height:110px; max-width:100%; }
+.pt { position:absolute; width:9px; height:9px; margin:-5px 0 0 -5px; border-radius:50%;
+      background:var(--hot); box-shadow:0 0 0 1px #000; }
+.pt.out { background:#ff4d4d; }

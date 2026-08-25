@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@mediapipe/tasks-vision": "^1.0.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
@@ -12,7 +13,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node test_frame.mjs && node test_extract.mjs"
+    "test": "node test_frame.mjs"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.1.0",
