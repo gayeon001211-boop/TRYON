@@ -1,19 +1,30 @@
-import { SamModel, AutoProcessor, RawImage, Tensor } from '@huggingface/transformers';
+import { SamModel, AutoProcessor, RawImage, Tensor, env } from '@huggingface/transformers';
 
 const MODEL = 'Xenova/slimsam-77-uniform';   // ~40 MB Segment Anything, runs locally
 
 let loading;
+export let backend = '';   // what actually ran, for the UI to own up to
+
 /** Load SlimSAM once. `onProgress` gets 0–1 while the weights download. */
 export function loadSam(onProgress) {
-  if (!loading) {
+  if (!loading) loading = (async () => {
     const progress_callback = p => p.status === 'progress' && onProgress?.(p.progress / 100);
-    const webgpu = typeof navigator !== 'undefined' && navigator.gpu;
-    const device = webgpu ? 'webgpu' : typeof window === 'undefined' ? 'cpu' : 'wasm';   // 'cpu' = node, for the test
-    loading = Promise.all([
-      SamModel.from_pretrained(MODEL, { dtype: webgpu ? 'fp16' : 'fp32', device, progress_callback }),
+    // WebGPU is ~100× faster here, but only if an adapter really exists
+    const adapter = await navigator?.gpu?.requestAdapter?.().catch(() => null);
+    const node = typeof window === 'undefined';
+    const device = adapter ? 'webgpu' : node ? 'cpu' : 'wasm';
+    if (device === 'wasm') {
+      env.backends.onnx.wasm.numThreads = globalThis.crossOriginIsolated
+        ? Math.min(8, navigator.hardwareConcurrency || 4) : 1;
+      backend = `wasm ×${env.backends.onnx.wasm.numThreads}`;
+    } else backend = device;
+
+    const [model, processor] = await Promise.all([
+      SamModel.from_pretrained(MODEL, { dtype: adapter ? 'fp16' : 'q8', device, progress_callback }),
       AutoProcessor.from_pretrained(MODEL),
-    ]).then(([model, processor]) => ({ model, processor }));
-  }
+    ]);
+    return { model, processor };
+  })();
   return loading;
 }
 

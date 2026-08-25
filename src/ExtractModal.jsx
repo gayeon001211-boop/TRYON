@@ -18,6 +18,7 @@ export default function ExtractModal({ file, onDone, onCancel }) {
   const [secs, setSecs] = useState(0);
   const [points, setPoints] = useState(null);
   const [face, setFace] = useState(null);        // {eyeSpan, eyeY} in natural px
+  const [backend, setBackend] = useState('');
   const [cut, setCut] = useState(null);          // {canvas, spanRatio, yRatio}
 
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
@@ -40,6 +41,7 @@ export default function ExtractModal({ file, onDone, onCancel }) {
       detectInImage(img).catch(() => null),
     ]);
 
+    setBackend((await sam()).backend);
     setStage('encode');
     ctxRef.current = await embed(img);
 
@@ -93,7 +95,7 @@ export default function ExtractModal({ file, onDone, onCancel }) {
 
   const note = {
     model: `01. loading the model — ${Math.round(pct * 100)}% (first upload only)`,
-    encode: '02. reading the photo',
+    encode: `02. reading the photo — ${backend}`,
     cut: '03. cutting the glasses out',
     idle: points ? 'wrong bit? click to add a point, alt-click to exclude.'
                  : 'no face found — click on the glasses.',
