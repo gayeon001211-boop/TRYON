@@ -36,3 +36,7 @@ input[type=range] { width:100%; accent-color:var(--hot); }
 .bar i { display:block; height:100%; background:var(--hot); transition:width .35s linear; }
 .hint { color:var(--dim); font-size:10px; }
 .row { display:flex; gap:8px; margin-top:12px; }
+.preview { background:repeating-conic-gradient(#1a1a1c 0 25%,#111 0 50%) 0 0/16px 16px;
+           border:1px solid var(--line); margin:14px 0; padding:10px; min-height:70px;
+           display:flex; align-items:center; justify-content:center; }
+.preview img { max-height:110px; max-width:100%; }

@@ -48,6 +48,8 @@ export function useTryOn(paramsRef) {
       if (lm) {
         const mirror = q => ({ x: 1 - q.x, y: q.y });
         r.pose = poseFromEyes(mirror(lm[33]), mirror(lm[263]), canvas.width, canvas.height);
+        const nose = mirror(lm[1]);                       // head turn, for the sprite squash
+        r.pose.yaw = (nose.x * canvas.width - r.pose.cx) / r.pose.eyeSpan;
       }
       setFaceFound(Boolean(lm));
 
@@ -58,7 +60,7 @@ export function useTryOn(paramsRef) {
           cx: mix(-canvas.width * 0.1, r.pose.cx),
           cy: mix(canvas.height / 2, r.pose.cy),
           angle: mix(0, r.pose.angle),
-          eyeSpan: r.pose.eyeSpan,
+          eyeSpan: r.pose.eyeSpan, yaw: r.pose.yaw,
         }, p.fit, p.frameColor, p.lensColor, k);
       }
     };

@@ -72,15 +72,22 @@ export function tinted(frame, color) {
   return c;
 }
 
-/** Draw one frame onto ctx at a face pose. `fit` = {w,h,y,r}. */
+/**
+ * Draw one frame onto ctx at a face pose. `fit` = {w,h,y,r}.
+ * spanRatio/yRatio come from the photo the frame was cut out of, so an extracted
+ * frame lands at the size and height it had on that face.
+ * ponytail: yaw only squashes the sprite horizontally — a real 3D frame would rotate.
+ */
 export function drawFrame(ctx, frame, pose, fit, frameColor, lensColor, alpha = 1) {
-  const s = pose.eyeSpan * fit.w;
+  const span = pose.eyeSpan;
+  const s = span * (frame.spanRatio ?? 1.6) * fit.w;
+  const yaw = Math.max(0.45, 1 - Math.abs(pose.yaw ?? 0) * 1.6);
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.translate(pose.cx, pose.cy);
   ctx.rotate(pose.angle + fit.r * Math.PI / 180);
-  ctx.translate(0, fit.y * s);
-  ctx.scale(s, s * fit.h);
+  ctx.translate(span * (pose.yaw ?? 0) * 0.12, span * ((frame.yRatio ?? 0) + fit.y));
+  ctx.scale(s * yaw, s * fit.h);
   if (frame.canvas) {
     const img = tinted(frame, frameColor), ar = img.height / img.width;
     ctx.drawImage(img, -0.5, -ar / 2, 1, ar);

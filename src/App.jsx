@@ -6,12 +6,12 @@ import Thumb from './Thumb.jsx';
 const FRAME_COLORS = ['#111111', '#c98b2e', '#b9bcc0', '#a92b2b', '#2f4f9b', '#f0ece2'];
 const LENS_COLORS = ['#ffffff10', '#3a3a3a80', '#6b4a2280', '#2b4d8c80', '#00000000'];
 const PRESETS = [
-  { id: 'round', name: 'round', shape: 'round' },
-  { id: 'square', name: 'square', shape: 'square' },
-  { id: 'cat', name: 'cat-eye', shape: 'cat' },
+  { id: 'round', name: 'round', shape: 'round', spanRatio: 1.55, yRatio: -0.09 },
+  { id: 'square', name: 'square', shape: 'square', spanRatio: 1.55, yRatio: -0.09 },
+  { id: 'cat', name: 'cat-eye', shape: 'cat', spanRatio: 1.55, yRatio: -0.09 },
 ];
-// eyeSpan → frame width. Real faces and cameras vary; the fit sliders are the calibration.
-const DEFAULT_FIT = { w: 1.55, h: 1, y: -0.06, r: 0 };
+// Frames carry their own size/height from the photo; these sliders are the fine tuning.
+const DEFAULT_FIT = { w: 1, h: 1, y: 0, r: 0 };
 
 export default function App() {
   const [frames, setFrames] = useState(PRESETS);
@@ -29,9 +29,9 @@ export default function App() {
 
   const { videoRef, canvasRef, status, faceFound, start } = useTryOn(paramsRef);
 
-  const addFrame = canvas => {
-    const f = { id: 'f' + Date.now(), name: 'frame ' + (frames.length + 1), canvas };
-    setFrames([...frames, f]); setActiveId(f.id); setFile(null);
+  const addFrame = f => {
+    const frame = { id: 'f' + Date.now(), name: 'frame ' + (frames.length + 1), ...f };
+    setFrames([...frames, frame]); setActiveId(frame.id); setFile(null); setWorn(true);
   };
 
   const slider = (key, label, min, max, step, fmt) => (
@@ -98,9 +98,9 @@ export default function App() {
             ))}
           </div>
           <h2>fit</h2>
-          {slider('w', 'width', 1.1, 2.2, 0.01, v => v.toFixed(2) + '×')}
+          {slider('w', 'width', 0.6, 1.6, 0.01, v => v.toFixed(2) + '×')}
           {slider('h', 'height', 0.6, 1.6, 0.01, v => v.toFixed(2) + '×')}
-          {slider('y', 'position', -0.5, 0.5, 0.01, v => v.toFixed(2))}
+          {slider('y', 'position', -0.4, 0.4, 0.01, v => v.toFixed(2))}
           {slider('r', 'rotation', -15, 15, 0.5, v => v.toFixed(1) + '°')}
           <div className="row">
             <button className="big" onClick={() => setWorn(!worn)}>
