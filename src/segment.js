@@ -34,15 +34,24 @@ export function pickPoints(lm, w, h) {
   ];
 }
 
-/** Run SAM and return {mask: Uint8Array(w*h), width, height} for the best-scoring mask. */
-export async function segment(image, points) {
+/**
+ * Encode the image once (the slow part, seconds) so that later point prompts
+ * only have to run the decoder (milliseconds).
+ */
+export async function embed(image) {
   const { model, processor } = await loadSam();
   const raw = image instanceof RawImage ? image : await RawImage.read(image);
   const inputs = await processor(raw);
+  return { inputs, embeddings: await model.get_image_embeddings(inputs), model, processor };
+}
+
+/** Decode one set of prompt points into {mask: Uint8Array(w*h), width, height}. */
+export async function segment(ctx, points) {
+  const { model, processor, inputs, embeddings } = ctx;
 
   const input_points = new Tensor('float32', points.flatMap(q => q.p), [1, 1, points.length, 2]);
   const input_labels = new Tensor('int64', points.map(q => BigInt(q.label)), [1, 1, points.length]);
-  const out = await model({ ...inputs, input_points, input_labels });
+  const out = await model({ ...embeddings, input_points, input_labels });
 
   const masks = await processor.post_process_masks(out.pred_masks, inputs.original_sizes, inputs.reshaped_input_sizes);
   const m = masks[0];                                   // dims [1, candidates, H, W]

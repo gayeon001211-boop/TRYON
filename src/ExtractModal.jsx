@@ -11,54 +11,71 @@ const sam = () => import('./segment.js');   // ~2 MB of runtime, only once someo
  */
 export default function ExtractModal({ file, onDone, onCancel }) {
   const imgRef = useRef(null);
+  const ctxRef = useRef(null);                   // encoded image, reused for every click
   const [url] = useState(() => URL.createObjectURL(file));
-  const [note, setNote] = useState('loading the model…');
-  const [busy, setBusy] = useState(true);
+  const [stage, setStage] = useState('model');   // model | encode | cut | idle
+  const [pct, setPct] = useState(0);
+  const [secs, setSecs] = useState(0);
   const [points, setPoints] = useState(null);
   const [face, setFace] = useState(null);        // {eyeSpan, eyeY} in natural px
   const [cut, setCut] = useState(null);          // {canvas, spanRatio, yRatio}
 
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
 
+  // a ticking clock, so a slow step never looks like a frozen one
+  useEffect(() => {
+    if (stage === 'idle') return;
+    const t0 = performance.now();
+    const id = setInterval(() => setSecs((performance.now() - t0) / 1000), 100);
+    return () => clearInterval(id);
+  }, [stage]);
+
   async function onLoad() {
     const img = imgRef.current;
-    (await sam()).loadSam(p => setNote(`loading the model… ${Math.round(p * 100)}%`));
-    const lm = await detectInImage(img).catch(() => null);
-    if (!lm) {
-      setBusy(false);
-      setNote('no face found — click on the glasses.');
-      return;
+    const { loadSam, embed, pickPoints } = await sam();
+
+    setStage('model');
+    const [, lm] = await Promise.all([
+      loadSam(p => setPct(p)),
+      detectInImage(img).catch(() => null),
+    ]);
+
+    setStage('encode');
+    ctxRef.current = await embed(img);
+
+    if (lm) {
+      const p = poseFromEyes(lm[33], lm[263], img.naturalWidth, img.naturalHeight);
+      setFace({ eyeSpan: p.eyeSpan, eyeY: p.cy });
+      setPoints(pickPoints(lm, img.naturalWidth, img.naturalHeight));
+    } else {
+      setStage('idle');
     }
-    const p = poseFromEyes(lm[33], lm[263], img.naturalWidth, img.naturalHeight);
-    setFace({ eyeSpan: p.eyeSpan, eyeY: p.cy });
-    setPoints((await sam()).pickPoints(lm, img.naturalWidth, img.naturalHeight));
   }
 
-  // (re-)segment whenever the prompt points change
+  // (re-)cut whenever the prompt points change — decoding is milliseconds
   useEffect(() => {
-    if (!points?.length) return;
+    if (!points?.length || !ctxRef.current) return;
     let stale = false;
     (async () => {
-      setBusy(true); setNote('cutting the glasses out…');
+      setStage('cut');
+      const { segment } = await sam();
       const img = imgRef.current;
-      const { mask, width, height } = await (await sam()).segment(img, points);
+      const { mask, width, height } = await segment(ctxRef.current, points);
       if (stale) return;
       const t = trim(cutOut(img, mask, width, height));
-      if (!t) { setCut(null); setNote('nothing found — click on the glasses.'); setBusy(false); return; }
-      const span = face?.eyeSpan ?? t.canvas.width / 1.55;
-      setCut({
+      const span = face?.eyeSpan ?? (t ? t.canvas.width / 1.55 : 1);
+      setCut(t && {
         canvas: t.canvas,
         spanRatio: t.canvas.width / span,
         yRatio: face ? (t.y + t.canvas.height / 2 - face.eyeY) / span : -0.09,
       });
-      setNote('wrong bit? click to add a point, alt-click to exclude.');
-      setBusy(false);
+      setStage('idle');
     })();
     return () => { stale = true; };
   }, [points, face]);
 
   const addPoint = e => {
-    if (busy) return;
+    if (stage === 'model' || stage === 'encode') return;
     const img = imgRef.current, r = img.getBoundingClientRect();
     const k = img.naturalWidth / r.width;
     const p = [(e.clientX - r.left) * k, (e.clientY - r.top) * k];
@@ -74,11 +91,23 @@ export default function ExtractModal({ file, onDone, onCancel }) {
     ));
   };
 
+  const note = {
+    model: `01. loading the model — ${Math.round(pct * 100)}% (first upload only)`,
+    encode: '02. reading the photo',
+    cut: '03. cutting the glasses out',
+    idle: points ? 'wrong bit? click to add a point, alt-click to exclude.'
+                 : 'no face found — click on the glasses.',
+  }[stage];
+
   return (
     <div className="overlay">
       <div className="panel">
-        <h2>{busy ? 'building your frame' : 'your frame'}</h2>
-        <p className="hint">{note}</p>
+        <h2>{stage === 'idle' ? 'your frame' : 'building your frame'}</h2>
+        <p className="hint">{note} {stage !== 'idle' && <b>{secs.toFixed(1)}s</b>}</p>
+        <div className="bar">
+          <i className={stage === 'model' ? '' : stage === 'idle' ? 'done' : 'busy'}
+             style={{ width: stage === 'model' ? `${pct * 100}%` : '100%' }} />
+        </div>
 
         <div className="cropbox" onClick={addPoint}>
           <img ref={imgRef} src={url} alt="uploaded" onLoad={onLoad} />
@@ -87,11 +116,11 @@ export default function ExtractModal({ file, onDone, onCancel }) {
 
         <div className="preview">
           {cut ? <img alt="extracted frame" src={cut.canvas.toDataURL()} />
-               : <span className="hint">{busy ? 'working…' : 'no frame yet'}</span>}
+               : <span className="hint">{stage === 'idle' ? 'nothing found yet' : 'working…'}</span>}
         </div>
 
         <div className="row">
-          <button className="big" disabled={!cut || busy} onClick={() => onDone(cut)}>use this frame</button>
+          <button className="big" disabled={!cut || stage !== 'idle'} onClick={() => onDone(cut)}>use this frame</button>
           <button className="big ghost" onClick={onCancel}>cancel</button>
         </div>
       </div>
