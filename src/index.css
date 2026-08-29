@@ -11,6 +11,8 @@ header b { font-size:15px; letter-spacing:.3em; }
 @keyframes pulse { 50% { opacity:.35 } }
 
 .seg { display:flex; border:1px solid var(--line); }
+.seg.wide { width:100%; margin-bottom:6px; }
+.seg.wide button { flex:1; }
 .seg button { background:none; color:var(--dim); border:0; font:inherit; text-transform:inherit;
               letter-spacing:inherit; padding:5px 12px; cursor:pointer; }
 .seg button.on { background:var(--hot); color:#000; }

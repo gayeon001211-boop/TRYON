@@ -75,12 +75,13 @@ export function useTryOn(paramsRef) {
     const p = paramsRef.current, layer = run.current.layer;
     if (!layer || !p?.frame) return;
     const f = p.frame;
-    const key = f.id + (f.canvas ? '·img' : '·' + f.shape);
+    const key = f.id + (f.canvas ? '·img' : '·' + f.shape + '·' + (f.rim ?? 1));
     if (key === glassesKey.current) return;
     glassesKey.current = key;
     layer.setGlasses({
       shape: f.shape || 'round',
       silhouette: f.canvas || null,
+      rim: f.rim ?? 1,
       spanRatio: f.spanRatio, yRatio: f.yRatio,
       frameColor: p.frameColor, lensColor: p.lensColor,
     });

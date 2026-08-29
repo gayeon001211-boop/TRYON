@@ -55,9 +55,9 @@ function lensPath(ctx, shape, sx) {
  * Temple arms in unit space. `yaw` (>0 head turned to its right) lengthens the arm
  * that swings toward camera and foreshortens the other, so a 3/4 view reads right.
  */
-export function drawTemples(ctx, frameColor, yaw = 0) {
+export function drawTemples(ctx, frameColor, yaw = 0, rim = 1) {
   ctx.save();
-  ctx.lineWidth = 0.03; ctx.lineJoin = ctx.lineCap = 'round'; ctx.strokeStyle = frameColor;
+  ctx.lineWidth = 0.03 * rim; ctx.lineJoin = ctx.lineCap = 'round'; ctx.strokeStyle = frameColor;
   for (const sx of [-1, 1]) {
     const reach = 0.14 * (1 + sx * yaw * 2.2);        // near-side arm gets longer
     if (reach <= 0.02) continue;
@@ -69,9 +69,9 @@ export function drawTemples(ctx, frameColor, yaw = 0) {
   ctx.restore();
 }
 
-export function drawVector(ctx, shape, frameColor, lensColor, yaw = 0) {
-  drawTemples(ctx, frameColor, yaw);
-  ctx.lineWidth = 0.035; ctx.lineJoin = ctx.lineCap = 'round'; ctx.strokeStyle = frameColor;
+export function drawVector(ctx, shape, frameColor, lensColor, yaw = 0, rim = 1) {
+  drawTemples(ctx, frameColor, yaw, rim);
+  ctx.lineWidth = 0.035 * rim; ctx.lineJoin = ctx.lineCap = 'round'; ctx.strokeStyle = frameColor;
   for (const sx of [-1, 1]) {
     lensPath(ctx, shape, sx);
     ctx.fillStyle = lensColor; ctx.fill(); ctx.stroke();
@@ -118,7 +118,7 @@ export function drawFrame(ctx, frame, pose, fit, frameColor, lensColor, alpha = 
     const img = tinted(frame, frameColor), ar = img.height / img.width;
     ctx.drawImage(img, -0.5, -ar / 2, 1, ar);
   } else {
-    drawVector(ctx, frame.shape, frameColor, lensColor, pose.yaw ?? 0);
+    drawVector(ctx, frame.shape, frameColor, lensColor, pose.yaw ?? 0, frame.rim ?? 1);
   }
   ctx.restore();
 }

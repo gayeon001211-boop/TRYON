@@ -35,10 +35,10 @@ function lensOutline(shape) {
   return p.getPoints(48);
 }
 
-function rimMesh(points2d, mat) {
+function rimMesh(points2d, mat, rim = 1) {
   const curve = new THREE.CatmullRomCurve3(
     points2d.map(pt => new THREE.Vector3(pt.x, pt.y, 0)), true);
-  const geo = new THREE.TubeGeometry(curve, 96, 0.018, 8, true);
+  const geo = new THREE.TubeGeometry(curve, 96, 0.018 * rim, 8, true);
   return new THREE.Mesh(geo, mat);
 }
 
@@ -55,7 +55,7 @@ function lensMesh(points2d, mat) {
   return new THREE.Mesh(geo, mat);
 }
 
-function templeMesh(side, mat) {
+function templeMesh(side, mat, rim = 1) {
   // hinge at the outer rim, run straight back along -Z, then drop behind the ear
   const s = side;
   const pts = [
@@ -65,7 +65,7 @@ function templeMesh(side, mat) {
     new THREE.Vector3(s * 0.52, 0.02, -0.56),
     new THREE.Vector3(s * 0.52, -0.10, -0.58),
   ];
-  const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 40, 0.016, 6, false);
+  const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 40, 0.016 * Math.min(rim, 1.6), 6, false);
   return new THREE.Mesh(geo, mat);
 }
 
@@ -73,7 +73,7 @@ function templeMesh(side, mat) {
  * Build the glasses group. `silhouette` (optional HTMLCanvasElement, transparent PNG of a
  * real extracted frame) becomes a front decal so the true texture/logo/colour shows.
  */
-export function buildGlasses({ shape = 'round', silhouette = null, frameColor = '#111', lensColor = '#ffffff10' }) {
+export function buildGlasses({ shape = 'round', silhouette = null, frameColor = '#111', lensColor = '#ffffff10', rim = 1 }) {
   const g = new THREE.Group();
   g.name = 'glasses';
 
@@ -89,15 +89,15 @@ export function buildGlasses({ shape = 'round', silhouette = null, frameColor = 
   const base = lensOutline(shape);
   for (const s of [-1, 1]) {
     const pts = base.map(p => ({ x: p.x + s * 0.30, y: p.y }));
-    g.add(rimMesh(pts, frameMat));
+    g.add(rimMesh(pts, frameMat, rim));
     const lens = lensMesh(pts, lensMat);
     g.add(lens);
-    g.add(templeMesh(s, frameMat));
+    g.add(templeMesh(s, frameMat, rim));
   }
 
   // bridge
   const bridge = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.016, 0.016, 0.22, 8),
+    new THREE.CylinderGeometry(0.016 * rim, 0.016 * rim, 0.22, 8),
     frameMat);
   bridge.rotation.z = Math.PI / 2;
   bridge.position.y = 0.07;

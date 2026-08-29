@@ -65,16 +65,29 @@ export default function App() {
     save(frames, { frameColor, lensColor, mode });
   }, [frames, frameColor, lensColor, mode]);
 
+  // switch the active frame; a measured frame carries its own colours, so mirror them
+  // onto the swatches (the user can still override afterwards)
+  const pickFrame = id => {
+    setActiveId(id);
+    const f = frames.find(x => x.id === id);
+    if (f?.frameColor) setFrameColor(f.frameColor);
+    if (f?.lensColor) setLensColor(f.lensColor);
+  };
+
   const addFrame = f => {
     const nf = { id: 'f' + Date.now(), name: 'frame ' + (frames.length - PRESETS.length + 1), user: true, ...f };
     setFrames([...frames, nf]);
-    setActiveId(nf.id); setFile(null); setWorn(true);
+    setActiveId(nf.id);
+    if (f.frameColor) setFrameColor(f.frameColor);
+    if (f.lensColor) setLensColor(f.lensColor);
+    setFit(DEFAULT_FIT);
+    setFile(null); setWorn(true);
   };
 
   const removeFrame = id => {
     setFrames(fs => fs.filter(f => f.id !== id));
     setCompareIds(ids => ids.filter(x => x !== id));
-    if (activeId === id) setActiveId('round');
+    if (activeId === id) pickFrame('round');
   };
 
   const rename = (id, name) => setFrames(fs => fs.map(f => f.id === id ? { ...f, name } : f));
@@ -97,6 +110,9 @@ export default function App() {
     const c = contactSheet();
     if (c) setSheet(c.toDataURL('image/png'));
   };
+
+  // edit the active frame in place (shape / rim weight). Persists via the frames effect.
+  const patchFrame = patch => setFrames(fs => fs.map(f => f.id === activeId ? { ...f, ...patch } : f));
 
   const slider = (key, label, min, max, step, fmt) => (
     <div key={key}>
@@ -128,7 +144,7 @@ export default function App() {
           <div className="frames">
             {frames.map(f => (
               <div key={f.id} className={'chip' + (f.id === activeId ? ' on' : '') + (compareIds.includes(f.id) ? ' cmp' : '')}>
-                <button className="pick" onClick={() => setActiveId(f.id)}>
+                <button className="pick" onClick={() => pickFrame(f.id)}>
                   <Thumb frame={f} />
                   {editing === f.id ? (
                     <input autoFocus defaultValue={f.name}
@@ -177,6 +193,21 @@ export default function App() {
         </div>
 
         <aside className="right">
+          {frame?.user && !frame.canvas && (
+            <>
+              <h2>shape — from your photo</h2>
+              <div className="seg wide">
+                {['round', 'square', 'cat'].map(sh => (
+                  <button key={sh} className={frame.shape === sh ? 'on' : ''}
+                          onClick={() => patchFrame({ shape: sh })}>{sh}</button>
+                ))}
+              </div>
+              <label>rim <b>{(frame.rim ?? 1).toFixed(1)}×</b></label>
+              <input type="range" min={0.4} max={2.4} step={0.05} value={frame.rim ?? 1}
+                     onChange={e => patchFrame({ rim: +e.target.value })} />
+            </>
+          )}
+
           <h2>frame color</h2>
           <div className="sw">
             {FRAME_COLORS.map(c => (
