@@ -14,6 +14,12 @@ npm run build
 npm test
 ```
 
+## 배포
+
+`netlify.toml` / `vercel.json` / `public/_headers` 에 SlimSAM 스레드 wasm이 요구하는
+`COOP/COEP` 헤더가 들어 있음. Netlify·Vercel·Cloudflare Pages 중 아무 곳에서나
+GitHub 저장소를 연결하면 빌드 설정 없이 바로 배포됨 (Vite 자동 감지, publish = `dist`).
+
 ## 구조
 
 - `src/App.jsx` — 레이아웃 + 상태. 컬렉션 관리(삭제·이름변경·PNG 저장), 2D/3D 토글, 비교, 스냅샷 트레이
