@@ -132,6 +132,10 @@ export default function ExtractModal({ file, onDone, onCancel }) {
 
         <div className="row">
           <button className="big" disabled={!cut || stage !== 'idle'} onClick={() => onDone(cut)}>use this frame</button>
+          <button className="big ghost" disabled={!cut} onClick={() => {
+            const a = document.createElement('a');
+            a.href = cut.canvas.toDataURL('image/png'); a.download = 'frame.png'; a.click();
+          }}>png ↧</button>
           <button className="big ghost" onClick={onCancel}>cancel</button>
         </div>
       </div>

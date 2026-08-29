@@ -8,8 +8,10 @@ const isolate = {
   'Cross-Origin-Embedder-Policy': 'credentialless',
 };
 
+const port = process.env.PORT ? Number(process.env.PORT) : 5173;
+
 export default defineConfig({
   plugins: [react()],
-  server: { headers: isolate },
-  preview: { headers: isolate },
+  server: { port, headers: isolate },
+  preview: { port, headers: isolate },
 });
