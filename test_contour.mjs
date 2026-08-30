@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {
-  largestComponent, fillHoles, morphClose, morphOpen, detectHoles,
+  largestComponent, connectComponents, fillHoles, morphClose, morphOpen, detectHoles,
   traceContour, simplify, polyBBox, polyArea, normalisePoly,
 } from './src/contour.js';
 
@@ -28,6 +28,31 @@ const grid = (w, h, fn) => { const m = new Uint8Array(w * h); for (let y = 0; y 
   assert.equal(kept[2 * w + 2], 1);
   assert.equal(kept[2 * w + 19], 1, 'second lens kept');
   assert.equal(kept[7 * w + 12], 0, 'speck dropped');
+}
+
+/* connectComponents: two side-by-side lens blobs with a gap -> joined into one contour */
+{
+  const w = 60, h = 20, m = new Uint8Array(w * h);
+  for (let y = 5; y <= 14; y++) for (let x = 6; x <= 20; x++) m[y * w + x] = 1;   // left lens
+  for (let y = 5; y <= 14; y++) for (let x = 38; x <= 52; x++) m[y * w + x] = 1;  // right lens (gap 21..37)
+  const joined = connectComponents(m, w, h);
+  assert.equal(joined[10 * w + 29], 1, 'gap between the lenses is bridged');
+  const comps = () => {
+    const seen = new Uint8Array(w * h); let n = 0;
+    for (let i = 0; i < joined.length; i++) {
+      if (!joined[i] || seen[i]) continue;
+      n++; const s = [i]; seen[i] = 1;
+      while (s.length) { const p = s.pop(); for (const q of [p - 1, p + 1, p - w, p + w])
+        if (q >= 0 && q < joined.length && joined[q] && !seen[q]) { seen[q] = 1; s.push(q); } }
+    }
+    return n;
+  };
+  assert.equal(comps(), 1, 'now a single component');
+  // vertically stacked blobs (not a lens pair) are left alone
+  const v = new Uint8Array(w * h);
+  for (let y = 1; y <= 4; y++) for (let x = 10; x <= 14; x++) v[y * w + x] = 1;
+  for (let y = 14; y <= 18; y++) for (let x = 10; x <= 14; x++) v[y * w + x] = 1;
+  assert.equal(connectComponents(v, w, h)[9 * w + 12], 0, 'vertical pair not bridged');
 }
 
 /* fillHoles: a hollow ring -> interior filled, outside untouched */

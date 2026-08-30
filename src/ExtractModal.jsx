@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { detectInImage } from './extract.js';
-import { buildAsset } from './glassesAsset.js';
+import { buildAsset, foregroundFromBackground } from './glassesAsset.js';
 import { drawAssetFront } from './assetRender.js';
 
 const sam = () => import('./segment.js');
@@ -53,9 +53,9 @@ export default function ExtractModal({ file, onDone, onCancel }) {
     x.restore();
   }, [asset]);
 
-  // 3D 3/4 + side preview (lazy)
+  // 3D 3/4 + side preview (lazy) — any real trace, confident or not
   useEffect(() => {
-    if (!asset || !asset.ok) return;
+    if (!asset || asset.reason) return;
     let cancelled = false;
     (async () => {
       const [{ buildGlassesFromAsset }, THREE] = await Promise.all([model3d(), three()]);
@@ -78,19 +78,53 @@ export default function ExtractModal({ file, onDone, onCancel }) {
     return () => { cancelled = true; };
   }, [asset]);
 
+  const srcRef = useRef('sam');    // 'sam' | 'bg'
+
+  function imgDataAt(w, h) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const cx = c.getContext('2d', { willReadFrequently: true });
+    cx.drawImage(imgRef.current, 0, 0, w, h);
+    return cx.getImageData(0, 0, w, h);
+  }
+
+  function runBuild(imgData, mask, w, h, lm) {
+    const a = buildAsset(imgData, mask, w, h, lm);
+    a.id = 'a' + Date.now();
+    a.source = srcRef.current;
+    setAsset(a);
+    setStage('idle');
+  }
+
   async function onLoad() {
     const img = imgRef.current;
     try {
-      const { loadSam, embed, pickGlassesPoints } = await sam();
       setStage('model');
-      const [, lm] = await Promise.all([
-        loadSam(p => setPct(p)),
-        detectInImage(img).catch(() => null),
-      ]);
+      const lm = await detectInImage(img).catch(() => null);
+      lmRef.current = lm;
+
+      // background-key path for a plain-background product shot with no face — no SAM.
+      const W = Math.min(img.naturalWidth, 720);
+      const H = Math.round(img.naturalHeight * (W / img.naturalWidth));
+      const workData = imgDataAt(W, H);
+      const fg = foregroundFromBackground(workData, W, H);
+
+      if (!lm && fg.plainBg) {
+        srcRef.current = 'bg';
+        setBackend('background key');
+        setStage('trace');
+        maskRef.current = { mask: fg.mask, width: W, height: H };
+        runBuild(workData, fg.mask, W, H, null);
+        return;
+      }
+
+      // otherwise: SAM. face landmarks guide the prompts; without a face we prompt a band.
+      srcRef.current = 'sam';
+      const { loadSam, embed, pickGlassesPoints } = await sam();
+      await loadSam(p => setPct(p));
       setBackend((await sam()).backend);
       setStage('encode');
       ctxRef.current = await embed(file);
-      lmRef.current = lm;
       setPoints(pickGlassesPoints(lm, img.naturalWidth, img.naturalHeight));
     } catch (e) {
       setError(String(e.message || e));
@@ -108,28 +142,27 @@ export default function ExtractModal({ file, onDone, onCancel }) {
         const seg = await segment(ctxRef.current, points);
         if (stale) return;
         maskRef.current = seg;
-
-        const c = document.createElement('canvas');
-        c.width = seg.width; c.height = seg.height;
-        const cx = c.getContext('2d', { willReadFrequently: true });
-        cx.drawImage(imgRef.current, 0, 0, seg.width, seg.height);
-        const imgData = cx.getImageData(0, 0, seg.width, seg.height);
-
-        const a = buildAsset(imgData, seg.mask, seg.width, seg.height, lmRef.current || null);
-        a.id = 'a' + Date.now();
-        setAsset(a);
-        setStage('idle');
+        runBuild(imgDataAt(seg.width, seg.height), seg.mask, seg.width, seg.height, lmRef.current || null);
       } catch (e) { setError(String(e.message || e)); setStage('error'); }
     })();
     return () => { stale = true; };
   }, [points]);
 
-  const addPoint = e => {
+  const addPoint = async e => {
     if (stage !== 'idle') return;
     const img = imgRef.current, r = img.getBoundingClientRect();
     const k = img.naturalWidth / r.width;
     const p = [(e.clientX - r.left) * k, (e.clientY - r.top) * k];
-    setPoints([...(points ?? []), { p, label: e.altKey ? 0 : 1 }]);
+    const next = [...(points ?? []), { p, label: e.altKey ? 0 : 1 }];
+    // first click on a background-key result switches to SAM refinement
+    if (srcRef.current === 'bg' && !ctxRef.current) {
+      srcRef.current = 'sam';
+      setStage('encode');
+      const { loadSam, embed } = await sam();
+      await loadSam(pc => setPct(pc));
+      ctxRef.current = await embed(file);
+    }
+    setPoints(next);
   };
 
   const dots = () => {
@@ -152,13 +185,15 @@ export default function ExtractModal({ file, onDone, onCancel }) {
   };
 
   const note = {
-    model: `01. loading the model — ${Math.round(pct * 100)}% (first upload only)`,
+    model: '01. looking for a face',
     encode: `02. reading the photo — ${backend}`,
-    trace: '03. tracing the frame outline',
+    trace: srcRef.current === 'bg' ? '03. keying out the background' : '03. tracing the frame outline',
     idle: asset
-      ? (asset.ok
-          ? `frame detected — ${asset.geometry.outline.length} outline points, ${asset.quality.hasHoles ? 'lens openings found' : 'lens openings estimated'}`
-          : 'that did not read as glasses. add it anyway and adjust on the right, or click the frame to guide the mask.')
+      ? (asset.reason
+          ? `couldn't trace a frame (${asset.reason}). click on the glasses to guide it.`
+          : asset.ok
+            ? `frame traced — ${asset.geometry.outline.length} outline points, lens openings ${asset.quality.hasHoles ? 'found' : 'estimated'}`
+            : `traced, but low confidence (${!asset.quality.hasHoles ? 'lens openings estimated' : 'unusual outline'}). check the preview, adjust on the right, or click to guide the mask.`)
       : 'no result yet — click on the glasses.',
     error: 'it broke: ' + error,
   }[stage];
@@ -183,9 +218,12 @@ export default function ExtractModal({ file, onDone, onCancel }) {
           <figure><canvas ref={tqRef} width={200} height={110} /><figcaption>3/4</figcaption></figure>
           <figure><canvas ref={sideRef} width={200} height={110} /><figcaption>side</figcaption></figure>
         </div>
-        {asset && asset.ok && <p className="hint"><span className="ok">✓ frame detected</span>
+        {asset && !asset.reason && <p className="hint">
+          {asset.ok ? <span className="ok">✓ frame detected</span> : <span>~ low confidence</span>}
           &nbsp;·&nbsp; colour <span style={{ color: asset.frameColor }}>■</span> {asset.frameColor}
+          &nbsp;·&nbsp; lens <span style={{ color: asset.lensColor }}>■</span>
           &nbsp;·&nbsp; rim {(asset.dimensions.rimRatio * 100 | 0)}%
+          &nbsp;·&nbsp; {asset.source === 'bg' ? 'background key' : 'SAM'}
         </p>}
 
         {asset && (
@@ -259,7 +297,8 @@ function DebugView({ asset, img, mask, points }) {
   }, [asset, img, mask, points]);
 
   const items = [
-    ['1 · original', refs.orig], ['2 · SAM mask', refs.sam], ['3 · clean + filled', refs.clean],
+    ['1 · original', refs.orig], ['2 · ' + (asset.source === 'bg' ? 'bg-key mask' : 'SAM mask'), refs.sam],
+    ['3 · clean + filled', refs.clean],
     ['4 · frame contour', refs.frame], ['5 · lens contour', refs.lens], ['6 · 2D asset', refs.asset2d],
   ];
   return (

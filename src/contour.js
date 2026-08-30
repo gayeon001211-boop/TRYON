@@ -40,6 +40,47 @@ export function largestComponent(mask, w, h, minRatio = 0.15) {
 }
 
 /**
+ * If the mask is two side-by-side blobs (left lens, right lens) that SAM / the
+ * background key didn't bridge, join them with a bar across their overlapping rows
+ * so the frame traces as one contour. Up to `maxBlobs` components; no-op otherwise.
+ */
+export function connectComponents(mask, w, h, maxBlobs = 3) {
+  const label = new Int32Array(mask.length).fill(-1);
+  const comps = [];
+  const stack = [];
+  for (let s = 0; s < mask.length; s++) {
+    if (!mask[s] || label[s] !== -1) continue;
+    const id = comps.length; let area = 0;
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    stack.push(s); label[s] = id;
+    while (stack.length) {
+      const p = stack.pop(); area++;
+      const x = p % w, y = (p - x) / w;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      if (x > 0 && mask[p - 1] && label[p - 1] === -1) { label[p - 1] = id; stack.push(p - 1); }
+      if (x < w - 1 && mask[p + 1] && label[p + 1] === -1) { label[p + 1] = id; stack.push(p + 1); }
+      if (y > 0 && mask[p - w] && label[p - w] === -1) { label[p - w] = id; stack.push(p - w); }
+      if (y < h - 1 && mask[p + w] && label[p + w] === -1) { label[p + w] = id; stack.push(p + w); }
+    }
+    comps.push({ id, area, x0, y0, x1, y1, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 });
+  }
+  if (comps.length < 2 || comps.length > maxBlobs) return mask.slice();
+  comps.sort((a, b) => a.cx - b.cx);
+  const out = mask.slice();
+  for (let i = 0; i < comps.length - 1; i++) {
+    const a = comps[i], b = comps[i + 1];
+    if (a.area < comps[0].area * 0.1 || b.area < comps[0].area * 0.1) continue;
+    const yy0 = Math.max(a.y0, b.y0), yy1 = Math.min(a.y1, b.y1);
+    if (yy1 <= yy0) continue;                       // not vertically overlapping — not a lens pair
+    const midY = ((yy0 + yy1) / 2) | 0, band = Math.max(2, ((yy1 - yy0) * 0.18) | 0);
+    for (let y = Math.max(0, midY - band); y <= Math.min(h - 1, midY + band); y++)
+      for (let x = Math.max(0, a.cx | 0); x <= Math.min(w - 1, b.cx | 0); x++)
+        out[y * w + x] = 1;
+  }
+  return out;
+}
+
+/**
  * Fill background pockets fully enclosed by the mask — SAM often masks only the rim,
  * leaving a transparent lens as an unmasked hole. Flood-fills real background in from
  * the image border; any 0-pixel that flood never reaches was enclosed → becomes 1.

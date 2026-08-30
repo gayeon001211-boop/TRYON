@@ -10,7 +10,7 @@
 // Model space: x right, y up, origin between the lenses, frame width ≈ 1.0.
 
 import {
-  largestComponent, fillHoles, morphClose, morphOpen, detectHoles,
+  largestComponent, connectComponents, fillHoles, morphClose, morphOpen, detectHoles,
   traceContour, simplify, polyBBox, polyArea, normalisePoly,
 } from './contour.js';
 
@@ -26,6 +26,33 @@ function ellipsePoly(cx, cy, rx, ry, n = 28) {
   const p = [];
   for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; p.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); }
   return p;
+}
+
+/**
+ * Foreground mask for a product shot on a plain background — no SAM, no face needed.
+ * Corner-samples the background colour and keys it out; then the glasses (frame AND
+ * green/tinted lenses, which differ from the wall) is the foreground.
+ * Returns { mask, bg:[r,g,b], plainBg:boolean, spread:number }.
+ */
+export function foregroundFromBackground(img, w, h) {
+  const s = Math.max(2, Math.round(Math.min(w, h) * 0.02));
+  const patch = (x0, y0) => {
+    const cs = [];
+    for (let y = y0; y < y0 + s; y++) for (let x = x0; x < x0 + s; x++) cs.push(px(img, clamp(x, 0, w - 1), clamp(y, 0, h - 1)));
+    return [0, 1, 2].map(k => median(cs.map(c => c[k])));
+  };
+  const corners = [patch(0, 0), patch(w - s, 0), patch(0, h - s), patch(w - s, h - s)];
+  const bg = [0, 1, 2].map(k => median(corners.map(c => c[k])));
+  const spread = Math.max(...corners.map(c => Math.sqrt(dist2(c, bg))));
+  const plainBg = spread < 34;
+
+  // adaptive tolerance: a touch above the corner spread, floor 34
+  const tol2 = Math.max(34, spread * 1.6) ** 2;
+  const m = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (dist2(px(img, x, y), bg) > tol2) m[y * w + x] = 1;
+  }
+  return { mask: m, bg, plainBg, spread: +spread.toFixed(1) };
 }
 
 /** Zero the mask outside a band around the eyes, so hair / forehead / chin can't leak in. */
@@ -64,13 +91,13 @@ function boundaryShell(mask, w, h, r) {
  */
 function colourHoles(mask, img, w, h, frameRGB, ob) {
   const open = new Uint8Array(mask.length);
+  const thr2 = 56 * 56;
   for (let y = ob.y0; y <= ob.y1; y++) for (let x = ob.x0; x <= ob.x1; x++) {
     const i = y * w + x;
     if (!mask[i]) continue;
-    const c = px(img, x, y);
-    if (dist2(c, frameRGB) > 42 * 42) open[i] = 1;      // clearly not frame material
+    if (dist2(px(img, x, y), frameRGB) > thr2) open[i] = 1;   // clearly not frame material
   }
-  const opened = morphOpen(open, w, h, 1);
+  const opened = morphClose(morphOpen(open, w, h, 1), w, h, 1);
   // connected components of `opened`, keep the big central ones
   const seen = new Uint8Array(mask.length), comps = [];
   for (let i = 0; i < opened.length; i++) {
@@ -112,11 +139,14 @@ export function buildAsset(img, mask, w, h, landmarks) {
   m = largestComponent(m, w, h, 0.15);
   m = morphClose(m, w, h, 1);
   m = morphOpen(m, w, h, 1);
-  const solid = fillHoles(m, w, h);
+  const joined = connectComponents(m, w, h);        // bridge a left/right lens pair
+  const solid = fillHoles(joined, w, h);
   stages.cleanMask = m;
   stages.solidMask = solid;
 
-  // 2. outer contour (from the solid mask)
+  // 2. outer contour (from the solid mask). The traced outline is ALWAYS kept —
+  //    an unusual frame must not be replaced by a generic ellipse. `ok` below is a
+  //    confidence flag, not a gate on the geometry.
   const rawRing = traceContour(solid, w, h);
   if (rawRing.length < 12) return fail('no contour');
   const ringEps = Math.max(1.5, (w + h) / 400);
@@ -126,7 +156,8 @@ export function buildAsset(img, mask, w, h, landmarks) {
 
   const areaFrac = polyArea(outlinePx) / (w * h);
   const aspect = ob.w / Math.max(1, ob.h);
-  if (areaFrac < 0.002 || areaFrac > 0.7 || aspect < 1.15 || aspect > 7) return fail('not glasses-shaped');
+  if (areaFrac < 0.0015 || areaFrac > 0.9) return fail('contour fills the frame or is a speck');
+  const shapeLooksRight = aspect > 1.15 && aspect < 6.5 && ob.h > h * 0.03;
 
   // 3. frame colour from the boundary shell (definitely frame material)
   const rimGuess = Math.max(2, Math.round(Math.min(ob.w, ob.h) * 0.06));
@@ -140,14 +171,16 @@ export function buildAsset(img, mask, w, h, landmarks) {
   const frameColor = medianColor(pool.length ? pool : shellCols);
   const frameRGB = [parseInt(frameColor.slice(1, 3), 16), parseInt(frameColor.slice(3, 5), 16), parseInt(frameColor.slice(5, 7), 16)];
 
-  // 4. lens openings — real holes, then colour split, then ellipse fallback
-  let holes = detectHoles(m, w, h).filter(hh => {
+  // 4. lens openings — topological holes (rim-only mask), then a colour split of the
+  //    solid mask (SAM blob OR background-keyed foreground), then an ellipse fallback.
+  const holeOk = hh => {
     const f = hh.area / polyArea(outlinePx);
-    return f > 0.03 && f < 0.55 && hh.bbox.w > ob.w * 0.12 && hh.bbox.h > ob.h * 0.22 && Math.abs(hh.cy - ob.cy) < ob.h * 0.5;
-  });
+    return f > 0.025 && f < 0.6 && hh.bbox.w > ob.w * 0.1 && hh.bbox.h > ob.h * 0.18 && Math.abs(hh.cy - ob.cy) < ob.h * 0.55;
+  };
+  let holes = detectHoles(joined, w, h).filter(holeOk);
   let hasHoles = holes.length >= 2;
   if (!hasHoles) {
-    const ch = colourHoles(m, img, w, h, frameRGB, ob);
+    const ch = colourHoles(joined, img, w, h, frameRGB, ob).filter(holeOk);
     if (ch.length >= 2) { holes = ch; hasHoles = true; }
   }
 
@@ -200,12 +233,27 @@ export function buildAsset(img, mask, w, h, landmarks) {
     depth: +clamp(0.04 + rimRatio * 0.4, 0.03, 0.14).toFixed(3),
   };
 
-  // 7. lens tint — through the hole centre
-  const lc = px(img, clamp(Math.round(lb.cx), 0, w - 1), clamp(Math.round(lb.cy), 0, h - 1));
-  const rc = px(img, clamp(Math.round(rb.cx), 0, w - 1), clamp(Math.round(rb.cy), 0, h - 1));
-  const lensLum = (luma(lc) + luma(rc)) / 2;
-  const lensColor = lensLum < 110 ? hexOf([0, 1, 2].map(k => (lc[k] + rc[k]) / 2)) : '#ffffff';
-  const lensOpacity = +clamp((150 - lensLum) / 400, 0.04, 0.55).toFixed(2);
+  // 7. lens tint — median colour over each hole interior (not one pixel), then decide
+  //    clear vs tinted vs dark from luma + chroma.
+  const sampleHole = poly => {
+    const bb = polyBBox(poly), cs = [];
+    for (let k = 0; k < 40; k++) {
+      const t = k / 40;
+      const sx = clamp(Math.round(bb.x0 + bb.w * (0.3 + 0.4 * (k % 7) / 6)), 0, w - 1);
+      const sy = clamp(Math.round(bb.y0 + bb.h * (0.3 + 0.4 * t)), 0, h - 1);
+      cs.push(px(img, sx, sy));
+    }
+    return [0, 1, 2].map(ch => median(cs.map(c => c[ch])));
+  };
+  const lc = sampleHole(lensLpx), rc = sampleHole(lensRpx);
+  const avg = [0, 1, 2].map(k => (lc[k] + rc[k]) / 2);
+  const lensLum = luma(avg);
+  const chroma = Math.max(...avg) - Math.min(...avg);
+  const warmSkin = avg[0] === Math.max(...avg) && avg[0] - avg[2] > 38;   // eye/skin behind a clear lens
+  let lensColor, lensOpacity;
+  if (lensLum < 90) { lensColor = hexOf(avg); lensOpacity = +clamp((150 - lensLum) / 260, 0.18, 0.62).toFixed(2); }
+  else if (chroma > 20 && !warmSkin) { lensColor = hexOf(avg); lensOpacity = +clamp(chroma / 130, 0.12, 0.42).toFixed(2); }
+  else { lensColor = '#ffffff'; lensOpacity = 0.05; }
 
   // 8. placement on the source face
   let spanRatio = 1.55, yRatio = -0.05;
@@ -218,15 +266,20 @@ export function buildAsset(img, mask, w, h, landmarks) {
     }
   }
 
+  const score = clamp((hasHoles ? 0.5 : 0.25) + (shapeLooksRight ? 0.35 : 0)
+    + 0.15 * (1 - Math.abs(dimensions.aspect - 2.6) / 3), 0.1, 1);
+
   return {
-    ok: true,
+    // geometry is always the real trace; `ok` just says "confident enough not to nag"
+    ok: hasHoles && shapeLooksRight,
+    lowConfidence: !(hasHoles && shapeLooksRight),
     geometry: { outline, lensL, lensR, bridge, hingeL, hingeR },
     dimensions, frameColor, lensColor, lensOpacity,
     placement: { spanRatio, yRatio },
     quality: {
-      hasHoles, contourPoints: outline.length, lensPoints: lensL.length + lensR.length,
-      maskAreaFrac: +areaFrac.toFixed(4),
-      score: +clamp((hasHoles ? 0.6 : 0.35) + 0.4 * (1 - Math.abs(dimensions.aspect - 2.6) / 3), 0.1, 1).toFixed(2),
+      hasHoles, shapeLooksRight, contourPoints: outline.length,
+      lensPoints: lensL.length + lensR.length, maskAreaFrac: +areaFrac.toFixed(4),
+      score: +score.toFixed(2),
     },
     stages,
   };
