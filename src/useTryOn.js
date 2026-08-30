@@ -113,7 +113,9 @@ export function useTryOn(paramsRef) {
     setFaceFound(Boolean(lm));
 
     syncGlasses();
-    r.wear += ((p.worn ? 1 : 0) - r.wear) * 0.18;
+    const wt = p.worn ? 1 : 0;
+    r.wear += (wt - r.wear) * 0.2;
+    if (Math.abs(r.wear - wt) < 0.01) r.wear = wt;      // snap so the ease actually finishes
 
     const layer = r.layer;
     const use3d = p.mode === '3d' && !p.compare;
@@ -127,14 +129,15 @@ export function useTryOn(paramsRef) {
     } else {
       layer?.clear();
       if (r.pose && r.wear > 0.01) {
-        const k = r.wear, mix = (a, b) => a + (b - a) * k;
+        const k = r.wear;
+        // ease only the drop-in (y + scale + fade), never the horizontal anchor
         const pose = {
-          cx: mix(-c.width * 0.1, r.pose.cx),
-          cy: mix(c.height / 2, r.pose.cy),
-          angle: mix(0, r.pose.angle),
+          cx: r.pose.cx,
+          cy: r.pose.cy - (1 - k) * r.pose.eyeSpan * 0.6,
+          angle: r.pose.angle * k,
           eyeSpan: r.pose.eyeSpan, yaw: r.pose.yaw,
         };
-        drawAssetAtPose(ctx, p.frame.asset, pose, p.fit, p.opts, k);
+        drawAssetAtPose(ctx, p.frame.asset, pose, { ...p.fit, scale: (p.fit.scale ?? 1) * (0.85 + 0.15 * k) }, p.opts, k);
       }
     }
   }

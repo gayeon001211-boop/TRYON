@@ -29,6 +29,41 @@ function ellipsePoly(cx, cy, rx, ry, n = 28) {
 }
 
 /**
+ * Cut the actual frame pixels out of the source: the region inside the traced outline
+ * and OUTSIDE the lens openings, everything else transparent. This is the texture that
+ * gets mapped onto the 3D model, so the real material / colour / print is preserved —
+ * it is not pasted flat, it rides on the extruded geometry.
+ * Browser only (needs a canvas); returns a PNG data URL, or null under node.
+ */
+function buildFrontTexture(srcCanvas, ob, outlinePx, lensLpx, lensRpx) {
+  if (typeof document === 'undefined') return null;
+  const cap = 512;
+  const k = Math.min(1, cap / ob.w);
+  const tw = Math.max(8, Math.round(ob.w * k)), th = Math.max(8, Math.round(ob.h * k));
+  const c = document.createElement('canvas'); c.width = tw; c.height = th;
+  const cx = c.getContext('2d');
+  cx.drawImage(srcCanvas, ob.x0, ob.y0, ob.w, ob.h, 0, 0, tw, th);
+
+  const trace = (ctx, poly) => {
+    poly.forEach(([x, y], i) => {
+      const px = (x - ob.x0) * k, py = (y - ob.y0) * k;
+      i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+    });
+    ctx.closePath();
+  };
+  // frame mask = outline minus the two lens holes
+  const mc = document.createElement('canvas'); mc.width = tw; mc.height = th;
+  const mx = mc.getContext('2d');
+  mx.fillStyle = '#fff';
+  mx.beginPath(); trace(mx, outlinePx); trace(mx, lensLpx); trace(mx, lensRpx);
+  mx.fill('evenodd');
+
+  cx.globalCompositeOperation = 'destination-in';
+  cx.drawImage(mc, 0, 0);
+  return c.toDataURL('image/png');
+}
+
+/**
  * Foreground mask for a product shot on a plain background — no SAM, no face needed.
  * Corner-samples the background colour and keys it out; then the glasses (frame AND
  * green/tinted lenses, which differ from the wall) is the foreground.
@@ -123,6 +158,13 @@ function colourHoles(mask, img, w, h, frameRGB, ob) {
 
 export function buildAsset(img, mask, w, h, landmarks) {
   const stages = {};
+  // a drawable copy of the source, for the front texture
+  let srcCanvas = null;
+  if (typeof document !== 'undefined') {
+    srcCanvas = document.createElement('canvas');
+    srcCanvas.width = w; srcCanvas.height = h;
+    srcCanvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(img.data), w, h), 0, 0);
+  }
   const fail = reason => ({
     ok: false, reason,
     geometry: fallbackGeometry(),
@@ -213,6 +255,13 @@ export function buildAsset(img, mask, w, h, landmarks) {
   const lensL = normalisePoly(lensLpx, centre, scale);
   const lensR = normalisePoly(lensRpx, centre, scale);
 
+  // the real frame pixels, cut to the frame shape, + where they sit in model space
+  const frontTexture = buildFrontTexture(srcCanvas, ob, outlinePx, lensLpx, lensRpx);
+  const textureBox = {
+    x0: (ob.x0 - centre.x) / scale, y0: -(ob.y1 - centre.y) / scale,
+    w: ob.w / scale, h: ob.h / scale,
+  };
+
   const near = outline.filter(([, y]) => Math.abs(y) < 0.14);
   const hpool = near.length >= 2 ? near : outline;
   const hingeL = hpool.reduce((a, b) => (b[0] < a[0] ? b : a));
@@ -274,6 +323,7 @@ export function buildAsset(img, mask, w, h, landmarks) {
     ok: hasHoles && shapeLooksRight,
     lowConfidence: !(hasHoles && shapeLooksRight),
     geometry: { outline, lensL, lensR, bridge, hingeL, hingeR },
+    frontTexture, textureBox,          // the real frame pixels, mapped onto the model
     dimensions, frameColor, lensColor, lensOpacity,
     placement: { spanRatio, yRatio },
     quality: {

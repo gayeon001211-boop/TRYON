@@ -117,6 +117,28 @@ export function buildGlassesFromAsset(asset, opts = {}) {
   group.add(lensSurface(lensL, lensMat, depth * 0.1));
   group.add(lensSurface(lensR, lensMat, depth * 0.1));
 
+  // the real frame pixels, mapped onto the front face — the uploaded design, on 3D geometry
+  if (asset.frontTexture && asset.textureBox && opts.texture !== false) {
+    const decalShape = shapeFromPoly(g.outline);
+    decalShape.holes = [pathFromPoly([...lensL].reverse()), pathFromPoly([...lensR].reverse())];
+    const decalGeo = new THREE.ShapeGeometry(decalShape, 12);
+    const tb = asset.textureBox, pos = decalGeo.attributes.position, uv = decalGeo.attributes.uv;
+    for (let i = 0; i < pos.count; i++) {
+      uv.setXY(i, (pos.getX(i) - tb.x0) / tb.w, (pos.getY(i) - tb.y0) / tb.h);
+    }
+    uv.needsUpdate = true;
+    const decalMat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false });
+    new THREE.TextureLoader().load(asset.frontTexture, tex => {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      decalMat.map = tex; decalMat.needsUpdate = true;
+    });
+    const decal = new THREE.Mesh(decalGeo, decalMat);
+    decal.position.z = depth / 2 + 0.004;
+    decal.renderOrder = 3;
+    group.add(decal);
+    group.userData.decalMat = decalMat;
+  }
+
   // temples
   group.add(templeMesh(g.hingeL, -1, frameMat, dim, thickness));
   group.add(templeMesh(g.hingeR, 1, frameMat, dim, thickness));

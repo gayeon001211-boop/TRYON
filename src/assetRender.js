@@ -1,10 +1,25 @@
-// 2D render of a GlassesAsset — the front view, straight from the traced polygons.
-// No pixels from the source photo are drawn; the outline IS the uploaded frame's.
+// 2D render of a GlassesAsset — the front view.
+// When the asset carries `frontTexture` (the real frame pixels, cut to the frame
+// shape), that is drawn on top of the geometry so the uploaded design shows; the
+// flat fill is the fallback (presets, or while the texture decodes).
 //
 // The caller sets up the transform so 1 unit = frame width, origin = frame centre,
 // canvas y pointing down. Asset polygons are y-up, so we flip y here.
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+const texCache = new Map();
+function texImg(url) {
+  if (!url) return null;
+  let e = texCache.get(url);
+  if (!e) {
+    e = { img: new Image(), ready: false };
+    e.img.onload = () => { e.ready = true; };
+    e.img.src = url;
+    texCache.set(url, e);
+  }
+  return e.ready ? e.img : null;
+}
 
 function path(ctx, poly, flipY = true) {
   ctx.beginPath();
@@ -48,23 +63,29 @@ export function drawAssetFront(ctx, asset, opts = {}) {
   const lensL = insetPoly(g.lensL, d);
   const lensR = insetPoly(g.lensR, d);
 
+  const tImg = opts.texture !== false ? texImg(asset.frontTexture) : null;
+  const tb = asset.textureBox;
+
   ctx.save();
   ctx.lineJoin = ctx.lineCap = 'round';
 
   if (showTemples) drawTemples(ctx, g, frameColor, baseRim, yaw, asset.dimensions);
 
-  // frame = outline minus the two lens holes (even-odd)
-  ctx.beginPath();
-  addSub(ctx, g.outline);
-  addSub(ctx, lensL);
-  addSub(ctx, lensR);
-  ctx.fillStyle = frameColor;
-  ctx.fill('evenodd');
-
-  // a hairline on the outer edge so thin metal frames still read
-  ctx.lineWidth = Math.max(0.004, baseRim * 0.12);
-  ctx.strokeStyle = frameColor;
-  path(ctx, g.outline); ctx.stroke();
+  if (tImg && tb) {
+    // the real frame pixels, already cut to the frame shape when the asset was built
+    ctx.drawImage(tImg, tb.x0, -(tb.y0 + tb.h), tb.w, tb.h);
+  } else {
+    // fallback: flat frame = outline minus the two lens holes (even-odd)
+    ctx.beginPath();
+    addSub(ctx, g.outline);
+    addSub(ctx, lensL);
+    addSub(ctx, lensR);
+    ctx.fillStyle = frameColor;
+    ctx.fill('evenodd');
+    ctx.lineWidth = Math.max(0.004, baseRim * 0.12);
+    ctx.strokeStyle = frameColor;
+    path(ctx, g.outline); ctx.stroke();
+  }
 
   // lens surfaces
   ctx.globalAlpha = clamp(lensOpacity, 0, 1);
