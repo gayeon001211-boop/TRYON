@@ -1,30 +1,36 @@
 import { useEffect, useRef, useState } from 'react';
 import { detectInImage } from './extract.js';
-import { measureFrame } from './measure.js';
-import { drawVector } from './frame.js';
+import { buildAsset } from './glassesAsset.js';
+import { drawAssetFront } from './assetRender.js';
 
-const sam = () => import('./segment.js');   // ~2 MB of runtime, only once someone uploads
+const sam = () => import('./segment.js');
+const model3d = () => import('./glassesModel.js');
+const three = () => import('three');
 
 /**
- * Upload → find the face → SAM masks the glasses → we *measure* it (shape, rim weight,
- * frame colour, lens tint, where it sat) and add it straight to My Frames.
- * Nothing from the photo is pasted, so a messy cut can't smear onto the face.
- * Shape / rim / colour are all tuned afterwards on the main screen.
- * Wrong mask? click the glasses to add a point, alt-click to exclude.
+ * Upload → SAM masks the glasses → buildAsset traces the real outline + lens openings
+ * → preview the asset (front / 3-4 / side, all from the asset, never the photo)
+ * → ADD TO MY FRAMES. Shape/rim/colour are tuned afterwards on the main screen.
+ * Bad mask? click the frame to add a point, alt-click to exclude.
  */
 export default function ExtractModal({ file, onDone, onCancel }) {
   const imgRef = useRef(null);
-  const ctxRef = useRef(null);                    // encoded image, reused for every click
-  const lmRef = useRef(null);                     // face landmarks of the photo
-  const previewRef = useRef(null);
+  const ctxRef = useRef(null);
+  const lmRef = useRef(null);
+  const maskRef = useRef(null);         // { mask, width, height } last SAM result
   const [url] = useState(() => URL.createObjectURL(file));
-  const [stage, setStage] = useState('model');    // model | encode | read | idle | error
+  const [stage, setStage] = useState('model');   // model | encode | trace | idle | error
   const [error, setError] = useState('');
   const [pct, setPct] = useState(0);
   const [secs, setSecs] = useState(0);
   const [points, setPoints] = useState(null);
   const [backend, setBackend] = useState('');
-  const [spec, setSpec] = useState(null);         // measured frame spec
+  const [asset, setAsset] = useState(null);
+  const [showDebug, setShowDebug] = useState(false);
+
+  const frontRef = useRef(null);
+  const tqRef = useRef(null);
+  const sideRef = useRef(null);
 
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
 
@@ -35,22 +41,47 @@ export default function ExtractModal({ file, onDone, onCancel }) {
     return () => clearInterval(id);
   }, [stage]);
 
-  // live preview of the modelled frame
+  // 2D front preview
   useEffect(() => {
-    const c = previewRef.current;
-    if (!c || !spec) return;
+    const c = frontRef.current;
+    if (!c || !asset) return;
     const x = c.getContext('2d');
     x.clearRect(0, 0, c.width, c.height);
     x.save();
-    x.translate(c.width / 2, c.height / 2); x.scale(c.width * 0.92, c.width * 0.92);
-    drawVector(x, spec.shape, spec.frameColor, spec.lensColor, 0, spec.rim);
+    x.translate(c.width / 2, c.height / 2); x.scale(c.width * 0.82, c.width * 0.82);
+    drawAssetFront(x, asset);
     x.restore();
-  }, [spec]);
+  }, [asset]);
+
+  // 3D 3/4 + side preview (lazy)
+  useEffect(() => {
+    if (!asset || !asset.ok) return;
+    let cancelled = false;
+    (async () => {
+      const [{ buildGlassesFromAsset }, THREE] = await Promise.all([model3d(), three()]);
+      if (cancelled) return;
+      const grp = buildGlassesFromAsset(asset);
+      const renderView = (canvas, rot) => {
+        if (!canvas) return;
+        const r = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+        r.setSize(canvas.width, canvas.height, false);
+        const sc = new THREE.Scene();
+        sc.add(new THREE.AmbientLight(0xffffff, 1.5));
+        const l = new THREE.DirectionalLight(0xffffff, 1.4); l.position.set(1, 1, 2); sc.add(l);
+        const cam = new THREE.PerspectiveCamera(32, 1, 0.1, 100); cam.position.set(0, 0, 3.6);
+        const m = grp.clone(true); m.rotation.set(...rot); m.scale.setScalar(2.1); sc.add(m);
+        r.render(sc, cam); r.dispose();
+      };
+      renderView(tqRef.current, [-0.15, -0.6, 0]);
+      renderView(sideRef.current, [0, -Math.PI / 2, 0]);
+    })();
+    return () => { cancelled = true; };
+  }, [asset]);
 
   async function onLoad() {
     const img = imgRef.current;
     try {
-      const { loadSam, embed, pickPoints } = await sam();
+      const { loadSam, embed, pickGlassesPoints } = await sam();
       setStage('model');
       const [, lm] = await Promise.all([
         loadSam(p => setPct(p)),
@@ -60,33 +91,33 @@ export default function ExtractModal({ file, onDone, onCancel }) {
       setStage('encode');
       ctxRef.current = await embed(file);
       lmRef.current = lm;
-      if (lm) setPoints(pickPoints(lm, img.naturalWidth, img.naturalHeight));
-      else setStage('idle');
+      setPoints(pickGlassesPoints(lm, img.naturalWidth, img.naturalHeight));
     } catch (e) {
       setError(String(e.message || e));
       setStage('error');
     }
   }
 
-  // (re-)segment + measure whenever the prompt points change
   useEffect(() => {
-    if (!points?.length || !ctxRef.current) return;
+    if (!points || !ctxRef.current) return;
     let stale = false;
     (async () => {
       try {
-        setStage('read');
+        setStage('trace');
         const { segment } = await sam();
-        const { mask, width, height } = await segment(ctxRef.current, points);
+        const seg = await segment(ctxRef.current, points);
         if (stale) return;
+        maskRef.current = seg;
 
         const c = document.createElement('canvas');
-        c.width = width; c.height = height;
+        c.width = seg.width; c.height = seg.height;
         const cx = c.getContext('2d', { willReadFrequently: true });
-        cx.drawImage(imgRef.current, 0, 0, width, height);
-        const imgData = cx.getImageData(0, 0, width, height);
+        cx.drawImage(imgRef.current, 0, 0, seg.width, seg.height);
+        const imgData = cx.getImageData(0, 0, seg.width, seg.height);
 
-        const m = measureFrame(imgData, mask, width, height, lmRef.current || null);
-        setSpec(m);
+        const a = buildAsset(imgData, seg.mask, seg.width, seg.height, lmRef.current || null);
+        a.id = 'a' + Date.now();
+        setAsset(a);
         setStage('idle');
       } catch (e) { setError(String(e.message || e)); setStage('error'); }
     })();
@@ -110,36 +141,32 @@ export default function ExtractModal({ file, onDone, onCancel }) {
     ));
   };
 
-  // a small persistent thumbnail of the source photo (the object URL dies with the modal)
-  function srcThumb() {
-    const img = imgRef.current;
-    const s = 96 / Math.max(img.naturalWidth, img.naturalHeight);
-    const t = document.createElement('canvas');
-    t.width = Math.round(img.naturalWidth * s); t.height = Math.round(img.naturalHeight * s);
-    t.getContext('2d').drawImage(img, 0, 0, t.width, t.height);
-    return t.toDataURL('image/jpeg', 0.7);
-  }
-
-  const use = () => spec && onDone({
-    shape: spec.shape, rim: spec.rim, frameColor: spec.frameColor, lensColor: spec.lensColor,
-    spanRatio: spec.spanRatio, yRatio: spec.yRatio, srcThumb: srcThumb(),
-  });
+  const use = () => {
+    if (!asset) return;
+    const t = imgRef.current;
+    const s = 120 / Math.max(t.naturalWidth, t.naturalHeight);
+    const tc = document.createElement('canvas');
+    tc.width = Math.round(t.naturalWidth * s); tc.height = Math.round(t.naturalHeight * s);
+    tc.getContext('2d').drawImage(t, 0, 0, tc.width, tc.height);
+    onDone({ asset, srcThumb: tc.toDataURL('image/jpeg', 0.72) });
+  };
 
   const note = {
     model: `01. loading the model — ${Math.round(pct * 100)}% (first upload only)`,
     encode: `02. reading the photo — ${backend}`,
-    read: '03. measuring the frame',
-    idle: spec
-      ? (spec.ok ? 'measured — shape, rim and colour are all adjustable after you add it.'
-                 : 'not sure that is glasses. add it anyway and fix the shape on the right, or click the frame to guide the mask.')
-      : 'no face found — click on the glasses.',
+    trace: '03. tracing the frame outline',
+    idle: asset
+      ? (asset.ok
+          ? `frame detected — ${asset.geometry.outline.length} outline points, ${asset.quality.hasHoles ? 'lens openings found' : 'lens openings estimated'}`
+          : 'that did not read as glasses. add it anyway and adjust on the right, or click the frame to guide the mask.')
+      : 'no result yet — click on the glasses.',
     error: 'it broke: ' + error,
   }[stage];
 
   return (
     <div className="overlay">
       <div className="panel">
-        <h2>{stage === 'idle' ? 'your frame' : stage === 'error' ? 'that did not work' : 'reading your frame'}</h2>
+        <h2>{stage === 'idle' ? 'extracted frame' : stage === 'error' ? 'that did not work' : 'extracting your frame'}</h2>
         <p className="hint">{note} {stage !== 'idle' && stage !== 'error' && <b>{secs.toFixed(1)}s</b>}</p>
         <div className="bar">
           <i className={stage === 'model' ? '' : stage === 'idle' || stage === 'error' ? 'done' : 'busy'}
@@ -151,19 +178,96 @@ export default function ExtractModal({ file, onDone, onCancel }) {
           {dots()}
         </div>
 
-        <div className="preview">
-          <canvas ref={previewRef} width={260} height={130}
-                  style={{ display: spec ? 'block' : 'none', maxWidth: '100%' }} />
-          {!spec && <span className="hint">{stage === 'idle' || stage === 'error' ? 'nothing yet' : 'working…'}</span>}
+        <div className="assetviews">
+          <figure><canvas ref={frontRef} width={200} height={110} /><figcaption>front</figcaption></figure>
+          <figure><canvas ref={tqRef} width={200} height={110} /><figcaption>3/4</figcaption></figure>
+          <figure><canvas ref={sideRef} width={200} height={110} /><figcaption>side</figcaption></figure>
         </div>
-        {spec && <p className="hint">read as <b>{spec.shape}</b>, rim {spec.rim.toFixed(1)}×,
-          colour <span style={{ color: spec.frameColor }}>■</span> {spec.frameColor}</p>}
+        {asset && asset.ok && <p className="hint"><span className="ok">✓ frame detected</span>
+          &nbsp;·&nbsp; colour <span style={{ color: asset.frameColor }}>■</span> {asset.frameColor}
+          &nbsp;·&nbsp; rim {(asset.dimensions.rimRatio * 100 | 0)}%
+        </p>}
+
+        {asset && (
+          <p className="hint">
+            <button className="linkish" onClick={() => setShowDebug(v => !v)}>
+              {showDebug ? '▾ hide' : '▸ show'} debug — segmentation / geometry stages
+            </button>
+          </p>
+        )}
+        {showDebug && asset && <DebugView asset={asset} img={imgRef.current} mask={maskRef.current} points={points} />}
 
         <div className="row">
-          <button className="big" disabled={!spec || stage !== 'idle'} onClick={use}>add to my frames</button>
+          <button className="big" disabled={!asset || stage !== 'idle'} onClick={use}>add to my frames</button>
           <button className="big ghost" onClick={onCancel}>cancel</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ---------- debug: the 9 stages ---------- */
+
+function DebugView({ asset, img, mask, points }) {
+  const refs = {
+    orig: useRef(null), sam: useRef(null), clean: useRef(null),
+    frame: useRef(null), lens: useRef(null), asset2d: useRef(null),
+  };
+
+  useEffect(() => {
+    if (!img || !mask) return;
+    const W = mask.width, H = mask.height, ar = H / W, cw = 200, ch = Math.round(cw * ar);
+
+    const fit = c => { c.width = cw; c.height = ch; return c.getContext('2d'); };
+    const drawImg = ctx => ctx.drawImage(img, 0, 0, cw, ch);
+    const drawMask = (ctx, m, colour) => {
+      const id = ctx.createImageData(cw, ch);
+      for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+        const mx = (x / cw * W) | 0, my = (y / ch * H) | 0;
+        const on = m[my * W + mx];
+        const i = (y * cw + x) * 4;
+        id.data[i] = colour[0] * on; id.data[i + 1] = colour[1] * on; id.data[i + 2] = colour[2] * on;
+        id.data[i + 3] = on ? 255 : 0;
+      }
+      ctx.putImageData(id, 0, 0);
+    };
+    const drawPoly = (ctx, polyPx, colour) => {
+      ctx.strokeStyle = colour; ctx.lineWidth = 1.4; ctx.beginPath();
+      polyPx.forEach(([x, y], i) => { const px = x / W * cw, py = y / H * ch; i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+      ctx.closePath(); ctx.stroke();
+    };
+
+    // 1 original
+    drawImg(fit(refs.orig.current));
+    // 2 raw SAM mask
+    drawMask(fit(refs.sam.current), mask.mask, [232, 255, 69]);
+    // 3 cleaned + hole-filled mask (what the outline is traced from)
+    drawMask(fit(refs.clean.current), asset.stages.solidMask || asset.stages.cleanMask || mask.mask, [120, 200, 255]);
+    // 4 frame contour over the photo
+    { const ctx = fit(refs.frame.current); drawImg(ctx); ctx.globalAlpha = 0.9;
+      if (asset.stages.outlinePx) drawPoly(ctx, asset.stages.outlinePx, '#e8ff45'); }
+    // 5 lens contours over the photo
+    { const ctx = fit(refs.lens.current); drawImg(ctx); ctx.globalAlpha = 0.9;
+      if (asset.stages.lensLpx) drawPoly(ctx, asset.stages.lensLpx, '#4fd1c5');
+      if (asset.stages.lensRpx) drawPoly(ctx, asset.stages.lensRpx, '#4fd1c5'); }
+    // 6 the extracted 2D asset
+    { const c = refs.asset2d.current; c.width = cw; c.height = ch;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#0b0b0c'; ctx.fillRect(0, 0, cw, ch);
+      ctx.save(); ctx.translate(cw / 2, ch / 2); ctx.scale(cw * 0.8, cw * 0.8);
+      drawAssetFront(ctx, asset); ctx.restore(); }
+  }, [asset, img, mask, points]);
+
+  const items = [
+    ['1 · original', refs.orig], ['2 · SAM mask', refs.sam], ['3 · clean + filled', refs.clean],
+    ['4 · frame contour', refs.frame], ['5 · lens contour', refs.lens], ['6 · 2D asset', refs.asset2d],
+  ];
+  return (
+    <div className="debug">
+      {items.map(([label, r]) => (
+        <figure key={label}><canvas ref={r} /><figcaption>{label}</figcaption></figure>
+      ))}
+      <p className="hint">7–9 (3D front / side / try-on) — see the preview above and the live camera.</p>
     </div>
   );
 }

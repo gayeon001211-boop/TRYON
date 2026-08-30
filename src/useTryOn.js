@@ -1,22 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
 import { FilesetResolver, FaceLandmarker } from '@mediapipe/tasks-vision';
-import { poseFromEyes, drawFrame, eulerFromLandmarks } from './frame.js';
+import { poseFromEyes, eulerFromLandmarks } from './frame.js';
+import { drawAssetAtPose } from './assetRender.js';
 
-const load3d = () => import('./glasses3d.js');   // ~500 KB of three, only when the camera starts
+const load3d = () => import('./glasses3d.js');
 
 const WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
 const MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
 
 /**
  * Owns the camera, the face landmarker and the render loop.
- * `paramsRef.current` carries the latest React state into the loop without restarting it:
- *   { frame, fit, frameColor, lensColor, worn, mode:'2d'|'3d', compare:[a,b]|null }
+ * `paramsRef.current` = { frame, opts, fit, worn, mode:'2d'|'3d', compare:[{frame,opts},…]|null }
+ * The GlassesAsset (frame.asset) is independent of tracking — this hook only places it.
  */
 export function useTryOn(paramsRef) {
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);       // 2D: video + (in 2d mode) the frame
-  const glCanvasRef = useRef(null);     // WebGL: the 3D glasses, stacked on top
-  const [status, setStatus] = useState('off');   // off | starting | on | denied
+  const canvasRef = useRef(null);
+  const glCanvasRef = useRef(null);
+  const [status, setStatus] = useState('off');
   const [faceFound, setFaceFound] = useState(false);
   const [facing, setFacing] = useState('user');
   const run = useRef({ pose: null, wear: 0, raf: 0, landmarker: null, layer: null, lm: null, euler: { yaw: 0, pitch: 0 } });
@@ -42,12 +43,11 @@ export function useTryOn(paramsRef) {
     try {
       await openCamera(facingMode);
       setFacing(facingMode);
-
       if (!run.current.landmarker) {
         const files = await FilesetResolver.forVisionTasks(WASM);
         run.current.landmarker = await FaceLandmarker.createFromOptions(files, {
           baseOptions: { modelAssetPath: MODEL, delegate: 'GPU' },
-          runningMode: 'VIDEO', numFaces: 1,
+          runningMode: 'VIDEO', numFaces: 1, outputFacialTransformationMatrixes: true,
         });
       }
       if (!run.current.layer) {
@@ -56,7 +56,6 @@ export function useTryOn(paramsRef) {
       }
       run.current.layer.resize(canvasRef.current.width, canvasRef.current.height);
       syncGlasses();
-
       setStatus('on');
       loop(0);
     } catch (e) {
@@ -66,25 +65,23 @@ export function useTryOn(paramsRef) {
 
   async function flip() {
     const next = facing === 'user' ? 'environment' : 'user';
-    try { await openCamera(next); setFacing(next); } catch { /* device may have one camera */ }
+    try { await openCamera(next); setFacing(next); } catch { /* one camera only */ }
   }
 
-  // rebuild the 3D model when the active frame identity changes
   const glassesKey = useRef('');
   function syncGlasses() {
     const p = paramsRef.current, layer = run.current.layer;
-    if (!layer || !p?.frame) return;
-    const f = p.frame;
-    const key = f.id + (f.canvas ? '·img' : '·' + f.shape + '·' + (f.rim ?? 1));
-    if (key === glassesKey.current) return;
-    glassesKey.current = key;
-    layer.setGlasses({
-      shape: f.shape || 'round',
-      silhouette: f.canvas || null,
-      rim: f.rim ?? 1,
-      spanRatio: f.spanRatio, yRatio: f.yRatio,
-      frameColor: p.frameColor, lensColor: p.lensColor,
-    });
+    if (!layer || !p?.frame?.asset) return;
+    const f = p.frame, o = p.opts || {};
+    // rebuild only when geometry-affecting things change
+    const key = [f.id, f.asset.id, f.asset.geometry.outline.length,
+      o.thickness ?? 1, o.templeLen ?? '', o.frameOpacity ?? 1].join('·');
+    if (key !== glassesKey.current) {
+      glassesKey.current = key;
+      layer.setGlasses({ asset: f.asset, opts: o });
+    } else {
+      layer.setColors(o);
+    }
   }
 
   function mirrorPt(q, on) { return on ? { x: 1 - q.x, y: q.y, z: q.z } : q; }
@@ -95,25 +92,21 @@ export function useTryOn(paramsRef) {
     if (!video || video.readyState < 2) return;
     const r = run.current, p = paramsRef.current;
     const ctx = c.getContext('2d');
-    const mir = paramsRef.current._mirror ?? (facing === 'user');
+    const mir = p._mirror ?? (facing === 'user');
 
-    // video
     ctx.save();
     if (mir) { ctx.translate(c.width, 0); ctx.scale(-1, 1); }
     ctx.drawImage(video, 0, 0, c.width, c.height);
     ctx.restore();
 
-    // detect
     const res = r.landmarker.detectForVideo(video, t);
     const lm = res?.faceLandmarks?.[0];
     if (lm) {
       const m = lm.map(q => mirrorPt(q, mir));
       r.lm = m;
       r.pose = poseFromEyes(m[33], m[263], c.width, c.height);
-      const nose = m[1];
-      r.pose.yaw = (nose.x * c.width - r.pose.cx) / r.pose.eyeSpan;
+      r.pose.yaw = (m[1].x * c.width - r.pose.cx) / r.pose.eyeSpan;
       const e = eulerFromLandmarks(m);
-      // low-pass so it doesn't jitter
       r.euler.yaw += (e.yaw - r.euler.yaw) * 0.4;
       r.euler.pitch += (e.pitch - r.euler.pitch) * 0.4;
     }
@@ -126,42 +119,41 @@ export function useTryOn(paramsRef) {
     const use3d = p.mode === '3d' && !p.compare;
 
     if (p.compare && r.pose) {
-      // 2D split screen — one frame each side of a divider
       layer?.clear();
-      drawSplit(ctx, c, r.pose, r.euler, p, r.wear);
+      drawSplit(ctx, c, r.pose, p, r.wear);
     } else if (use3d) {
-      layer.update(r.pose || dummyPose(c), r.euler, p.fit, p.frameColor, p.lensColor, r.wear, r.lm);
+      layer.update(r.pose || dummyPose(c), r.euler, p.fit, p.opts, r.wear, r.lm);
       layer.render();
     } else {
       layer?.clear();
       if (r.pose && r.wear > 0.01) {
         const k = r.wear, mix = (a, b) => a + (b - a) * k;
-        drawFrame(ctx, p.frame, {
+        const pose = {
           cx: mix(-c.width * 0.1, r.pose.cx),
           cy: mix(c.height / 2, r.pose.cy),
           angle: mix(0, r.pose.angle),
           eyeSpan: r.pose.eyeSpan, yaw: r.pose.yaw,
-        }, p.fit, p.frameColor, p.lensColor, k);
+        };
+        drawAssetAtPose(ctx, p.frame.asset, pose, p.fit, p.opts, k);
       }
     }
   }
 
-  function drawSplit(ctx, c, pose, euler, p, wear) {
-    const [a, b] = p.compare;
+  function drawSplit(ctx, c, pose, p, wear) {
     const half = c.width / 2;
-    for (const [frame, x0, x1] of [[a, 0, half], [b, half, c.width]]) {
+    p.compare.forEach(({ frame, opts }, i) => {
+      const x0 = i === 0 ? 0 : half, x1 = i === 0 ? half : c.width;
       ctx.save();
       ctx.beginPath(); ctx.rect(x0, 0, x1 - x0, c.height); ctx.clip();
-      if (wear > 0.01) drawFrame(ctx, frame, { ...pose, yaw: pose.yaw }, p.fit, p.frameColor, p.lensColor, wear);
+      if (wear > 0.01) drawAssetAtPose(ctx, frame.asset, pose, p.fit, opts, wear);
       ctx.restore();
-    }
+    });
     ctx.save();
     ctx.strokeStyle = '#e8ff45'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(half, 0); ctx.lineTo(half, c.height); ctx.stroke();
     ctx.restore();
   }
 
-  /** Composite the visible stage (2D + WebGL) into one PNG data URL. */
   function snapshot() {
     const c = canvasRef.current, g = glCanvasRef.current;
     if (!c) return null;
@@ -174,7 +166,6 @@ export function useTryOn(paramsRef) {
   }
 
   function contactSheet() { return run.current.layer?.contactSheet?.() ?? null; }
-
   const sample = () => ({ lm: run.current.lm, pose: run.current.pose });
 
   return { videoRef, canvasRef, glCanvasRef, status, faceFound, facing, start, flip, snapshot, contactSheet, sample };

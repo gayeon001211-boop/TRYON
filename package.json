@@ -14,7 +14,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node test_frame.mjs"
+    "test": "node test_frame.mjs && node test_contour.mjs && node test_asset.mjs"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.1.0",

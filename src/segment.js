@@ -32,20 +32,41 @@ export function loadSam(onProgress) {
 
 /**
  * Prompt points for a pair of glasses on a face, in image pixels.
- * Positives sit on the top rim and the bridge, negatives on skin — so SAM
- * takes the frame and leaves the face, the hair and the wall behind.
+ * Positives ring the frame (bridge + upper/lower/outer rim on both sides) so SAM
+ * traces the frame material; negatives sit in the LENS CENTRES (so the openings
+ * are carved out) and on skin / hair / wall.
+ * `lm` may be null — then we prompt a wide band across the eyes.
  */
-export function pickPoints(lm, w, h) {
+export function pickGlassesPoints(lm, w, h) {
+  if (!lm) {
+    const y = h * 0.42;
+    return [
+      { p: [w * 0.30, y], label: 1 }, { p: [w * 0.50, y - h * 0.03], label: 1 }, { p: [w * 0.70, y], label: 1 },
+      { p: [w * 0.5, h * 0.15], label: 0 }, { p: [w * 0.5, h * 0.8], label: 0 },
+      { p: [w * 0.06, y], label: 0 }, { p: [w * 0.94, y], label: 0 },
+    ];
+  }
   const at = i => [lm[i].x * w, lm[i].y * h];
   const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-  return [
-    { p: at(168), label: 1 },                        // bridge of the nose
-    { p: mid(at(159), at(105)), label: 1 },          // left top rim
-    { p: mid(at(386), at(334)), label: 1 },          // right top rim
-    { p: at(50), label: 0 }, { p: at(280), label: 0 },   // cheeks
-    { p: at(10), label: 0 }, { p: at(152), label: 0 },   // forehead, chin
+  const eyeL = lm[468] ? at(468) : mid(mid(at(33), at(133)), mid(at(159), at(145)));
+  const eyeR = lm[473] ? at(473) : mid(mid(at(263), at(362)), mid(at(386), at(374)));
+
+  const pos = [
+    at(168),                              // bridge
+    mid(at(159), at(105)), mid(at(145), at(163)), at(226),        // left rim: top, bottom, outer
+    mid(at(386), at(334)), mid(at(374), at(390)), at(446),        // right rim: top, bottom, outer
   ];
+  const neg = [
+    eyeL, eyeR,                           // ← carve the lens openings
+    at(50), at(280),                      // cheeks
+    at(10), at(152),                      // forehead, chin
+    at(234), at(454),                     // outside the temples
+  ];
+  return [...pos.map(p => ({ p, label: 1 })), ...neg.map(p => ({ p, label: 0 }))];
 }
+
+// keep the old name working for anything that still imports it
+export { pickGlassesPoints as pickPoints };
 
 /**
  * Encode the image once (the slow part, seconds) so that later point prompts
