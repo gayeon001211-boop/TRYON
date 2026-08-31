@@ -22,9 +22,11 @@ export class Glasses3DLayer {
     this.camera.position.set(0, 0, CAM_DIST);
     this.camera.lookAt(0, 0, 0);
 
-    this.scene.add(new THREE.AmbientLight(0xffffff, 1.4));
-    const key = new THREE.DirectionalLight(0xffffff, 1.6); key.position.set(1, 1, 2);
-    const rimL = new THREE.DirectionalLight(0x99bbff, 0.5); rimL.position.set(-1, 0.5, -1);
+    // the old rig (1.4 + 1.6 + a blue rim) blew out the frame texture and put a blue
+    // cast on everything — an olive lens came out grey-blue. Keep it near 1.0 total.
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+    const key = new THREE.DirectionalLight(0xffffff, 1.05); key.position.set(1, 1, 2);
+    const rimL = new THREE.DirectionalLight(0xd8e2f0, 0.22); rimL.position.set(-1, 0.5, -1);
     this.scene.add(key, rimL);
 
     this.pivot = new THREE.Group();
@@ -141,8 +143,8 @@ export class Glasses3DLayer {
     const rt = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     rt.setSize(px, px, false);
     const scene = new THREE.Scene();
-    scene.add(new THREE.AmbientLight(0xffffff, 1.5));
-    const l = new THREE.DirectionalLight(0xffffff, 1.5); l.position.set(1, 1, 2); scene.add(l);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+    const l = new THREE.DirectionalLight(0xffffff, 1.05); l.position.set(1, 1, 2); scene.add(l);
     const cam = new THREE.PerspectiveCamera(35, 1, 0.1, 100); cam.position.set(0, 0, 3.4);
     const model = this.glasses.clone(true);
     model.scale.setScalar(2.2); model.position.set(0, 0, 0);

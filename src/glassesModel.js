@@ -103,6 +103,43 @@ function templeMesh(hinge, sign, mat, dim, thickness) {
   return new THREE.Mesh(geo, mat);
 }
 
+
+/**
+ * A normal map from the texture's own shading. A front photo carries no depth, but the
+ * light and shade painted on the frame do describe its surface — Sobel over luminance
+ * turns that into relief, so the extrusion stops reading as a flat slab.
+ * ponytail: shading-as-height is an illusion, not a measurement; a depth model would do better.
+ */
+function reliefFromTexture(image, strength = 1) {
+  const w = Math.min(image.width || 256, 256), h = Math.min(image.height || 256, 256);
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(image, 0, 0, w, h);
+  const src = ctx.getImageData(0, 0, w, h), d = src.data;
+  const lum = new Float32Array(w * h);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    lum[p] = d[i + 3] < 8 ? 0.5 : (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255;
+  }
+  const out = ctx.createImageData(w, h), o = out.data;
+  const at = (x, y) => lum[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const gx = (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1))
+             - (at(x - 1, y - 1) + 2 * at(x - 1, y) + at(x - 1, y + 1));
+    const gy = (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1))
+             - (at(x - 1, y - 1) + 2 * at(x, y - 1) + at(x + 1, y - 1));
+    const nx = -gx * strength, ny = -gy * strength, nz = 1;
+    const len = Math.hypot(nx, ny, nz), i = (y * w + x) * 4;
+    o[i] = (nx / len * 0.5 + 0.5) * 255;
+    o[i + 1] = (ny / len * 0.5 + 0.5) * 255;
+    o[i + 2] = (nz / len * 0.5 + 0.5) * 255;
+    o[i + 3] = 255;
+  }
+  ctx.putImageData(out, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  return tex;
+}
+
 /**
  * @param asset  GlassesAsset
  * @param opts   { frameColor, lensColor, lensOpacity, thickness, frameOpacity }
@@ -161,7 +198,10 @@ export function buildGlassesFromAsset(asset, opts = {}) {
       uv.setXY(i, (pos.getX(i) - tb.x0) / tb.w, (pos.getY(i) - tb.y0) / tb.h);
     }
     uv.needsUpdate = true;
-    const decalMat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false });
+    // lit, so the relief below actually shows; roughness matches the frame material
+    const decalMat = new THREE.MeshStandardMaterial({
+      transparent: true, depthWrite: false, roughness: 0.45, metalness: 0.05,
+    });
     const decal = new THREE.Mesh(decalGeo, decalMat);
     decal.visible = false;                      // an unloaded map would render as a white plate
     new THREE.TextureLoader().load(
@@ -169,7 +209,13 @@ export function buildGlassesFromAsset(asset, opts = {}) {
       tex => {
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.anisotropy = 8;
-        decalMat.map = tex; decalMat.needsUpdate = true; decal.visible = true;
+        decalMat.map = tex;
+        try {
+          decalMat.normalMap = reliefFromTexture(tex.image, 2.2);
+          decalMat.normalScale = new THREE.Vector2(0.85, 0.85);
+        } catch { /* relief is a nicety; the flat texture still shows */ }
+        decalMat.needsUpdate = true; decal.visible = true;
+        opts.onReady?.();          // a one-shot renderer must draw again once this lands
       },
       undefined,
       () => { decal.visible = false; },

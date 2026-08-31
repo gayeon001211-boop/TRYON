@@ -108,7 +108,9 @@ function drawTemples(ctx, g, color, baseRim, yaw, dim) {
   ctx.strokeStyle = color;
   ctx.lineWidth = Math.max(0.012, baseRim * 0.7);
   for (const [hinge, sign] of [[g.hingeL, -1], [g.hingeR, 1]]) {
-    const reach = len * (0.28 + Math.max(0, sign * yaw) * 1.4);
+    // head-on, a temple points away from the camera and is all but invisible; the old
+    // 0.28 baseline drew it as a bar sticking out sideways from the front view
+    const reach = len * Math.max(0, sign * yaw) * 1.6;
     if (reach < 0.03) continue;
     const [hx, hy] = hinge;
     ctx.beginPath();

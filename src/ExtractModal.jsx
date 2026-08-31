@@ -60,14 +60,13 @@ export default function ExtractModal({ file, onDone, onCancel }) {
     (async () => {
       const [{ buildGlassesFromAsset }, THREE] = await Promise.all([model3d(), three()]);
       if (cancelled) return;
-      const grp = buildGlassesFromAsset(asset);
       const renderView = (canvas, rot) => {
         if (!canvas) return;
         const r = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
         r.setSize(canvas.width, canvas.height, false);
         const sc = new THREE.Scene();
-        sc.add(new THREE.AmbientLight(0xffffff, 1.5));
-        const l = new THREE.DirectionalLight(0xffffff, 1.4); l.position.set(1, 1, 2); sc.add(l);
+        sc.add(new THREE.AmbientLight(0xffffff, 0.9));
+        const l = new THREE.DirectionalLight(0xffffff, 1.05); l.position.set(1, 1, 2); sc.add(l);
         const m = grp.clone(true); m.rotation.set(...rot); sc.add(m);
         // frame the whole thing — a fixed scale cropped the temples straight off the side view
         const box = new THREE.Box3().setFromObject(m);
@@ -80,8 +79,13 @@ export default function ExtractModal({ file, onDone, onCancel }) {
         cam.lookAt(mid);
         r.render(sc, cam); r.dispose();
       };
-      renderView(tqRef.current, [-0.15, -0.6, 0]);
-      renderView(sideRef.current, [0, -Math.PI / 2, 0]);
+      const draw = () => {
+        if (cancelled) return;
+        renderView(tqRef.current, [-0.15, -0.6, 0]);
+        renderView(sideRef.current, [0, -Math.PI / 2, 0]);
+      };
+      const grp = buildGlassesFromAsset(asset, { onReady: draw });   // the texture loads async
+      draw();
     })();
     return () => { cancelled = true; };
   }, [asset]);
