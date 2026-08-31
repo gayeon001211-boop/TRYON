@@ -58,14 +58,15 @@ export default function ExtractModal({ file, onDone, onCancel }) {
     if (!asset || asset.reason) return;
     let cancelled = false;
     (async () => {
-      const [{ buildGlassesFromAsset }, THREE] = await Promise.all([model3d(), three()]);
+      const [{ buildGlassesFromAsset, studioEnvironment }, THREE] = await Promise.all([model3d(), three()]);
       if (cancelled) return;
       const renderView = (canvas, rot) => {
         if (!canvas) return;
         const r = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
         r.setSize(canvas.width, canvas.height, false);
         const sc = new THREE.Scene();
-        sc.add(new THREE.AmbientLight(0xffffff, 0.9));
+        sc.environment = studioEnvironment(r);
+        sc.add(new THREE.AmbientLight(0xffffff, 0.6));
         const l = new THREE.DirectionalLight(0xffffff, 1.05); l.position.set(1, 1, 2); sc.add(l);
         const m = grp.clone(true); m.rotation.set(...rot); sc.add(m);
         // frame the whole thing — a fixed scale cropped the temples straight off the side view

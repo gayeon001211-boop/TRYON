@@ -1,8 +1,10 @@
-// Build a 3D pair of glasses from a GlassesAsset by extruding its *traced* outline.
-// No round/square/cat-eye presets — the silhouette and the lens openings are the ones
-// pulled out of the uploaded photo.
+// Build a wearable 3D pair of glasses from a GlassesAsset.
+// The traced silhouette is a MEASUREMENT, not the shape: eyewear.js turns it into a
+// symmetric lens profile plus dimensions, and this file builds a real frame from those
+// — two rims, a bridge, end pieces, hinged temples, wrap, acetate and glass.
 
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { eyewearSpec, polyFromProfile } from './eyewear.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -123,9 +125,13 @@ function bridgeMesh(spec, mat) {
 
 /** End piece: the little block that carries the hinge, out at the temple side of a rim. */
 function endPieceMesh(spec, sign, mat) {
-  const e = spec.endPiece, s = e.size;
-  const geo = new THREE.BoxGeometry(s * 1.1, s * 0.75, spec.depth * 1.5, 1, 1, 1);
-  geo.translate(sign * e.x, e.y, -spec.depth * 0.25);
+  const e = spec.endPiece;
+  // a rounded slab reaching out to the frame's real outer edge, angled back a little
+  const geo = new THREE.ExtrudeGeometry(bladeShape(e.w / 2, e.h / 2), {
+    depth: spec.depth * 0.9, bevelEnabled: true, bevelThickness: spec.depth * 0.15,
+    bevelSize: e.h * 0.12, bevelSegments: 2, curveSegments: 6,
+  });
+  geo.translate(sign * e.x, e.y, -spec.depth * 0.45);
   const m = new THREE.Mesh(geo, mat); m.name = 'endPiece'; return m;
 }
 
@@ -144,34 +150,54 @@ function buildWearable(asset, opts, mats) {
   // a real lens is seated in a groove: cut it slightly larger than the opening so its
   // edge tucks under the rim, otherwise the rim's inner wall shows through the tint
   const lensPoly = polyFromProfile(spec.lensR, 0, 0, spec.rimW * 0.3);
+
   for (const sign of [-1, 1]) {
-    // each eye is its own group so it can wrap back towards the face
+    // One group per eye, wrapped back towards the face. The end piece and the arm live
+    // INSIDE it — parented to the frame instead they stayed flat while the rim turned,
+    // and tore away from it into floating chunks.
     const eye = new THREE.Group();
     eye.add(rimMesh(spec, 0, frameMat));
+
     const lens = lensSurface(lensPoly, lensMat, 0, 0);
     lens.position.set(0, spec.centreY, 0);
     eye.add(lens);
+
+    const local = { ...spec, endPiece: { ...spec.endPiece, x: spec.endPiece.x - spec.halfGap } };
+    eye.add(endPieceMesh(local, sign, frameMat));
+    const hinge = [
+      sign * (local.endPiece.x + local.endPiece.w * 0.35),
+      local.endPiece.y - local.endPiece.h * 0.15,
+    ];
+    eye.add(templeMesh(hinge, sign, frameMat, {
+      templeLen: spec.templeLen, templeDrop: spec.templeDrop, rimRatio: spec.rimW * 1.6,
+    }, opts.thickness ?? 1));
+
     eye.position.x = sign * spec.halfGap;
     eye.rotation.y = -sign * spec.wrap;
     group.add(eye);
   }
 
   if (spec.bridge.needed) group.add(bridgeMesh(spec, frameMat));
-  for (const sign of [-1, 1]) {
-    group.add(endPieceMesh(spec, sign, frameMat));
-    const hinge = [sign * spec.endPiece.x, spec.endPiece.y - spec.endPiece.size * 0.1];
-    group.add(templeMesh(hinge, sign, frameMat, {
-      templeLen: spec.templeLen, templeDrop: spec.templeDrop, rimRatio: spec.rimW * 1.6,
-    }, opts.thickness ?? 1));
-  }
   return group;
 }
 
 /**
- * @param asset  GlassesAsset
- * @param opts   { frameColor, lensColor, lensOpacity, thickness, frameOpacity }
- * @returns THREE.Group  (name 'glasses', ~1 unit wide, origin at frame centre)
+ * A small studio to reflect. Acetate gloss and lens glass are *reflections*: with lights
+ * alone, clearcoat and transmission render nothing and every frame looks like clay.
+ * One PMREM per renderer, cached.
  */
+const envCache = new WeakMap();
+export function studioEnvironment(renderer) {
+  let tex = envCache.get(renderer);
+  if (!tex) {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    tex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+    envCache.set(renderer, tex);
+  }
+  return tex;
+}
+
 export function buildGlassesFromAsset(asset, opts = {}) {
   const frameColor = opts.frameColor || asset.frameColor || '#222';
   const lensSpec = parseRGBA(opts.lensColor || asset.lensColor || '#ffffff');
@@ -180,13 +206,16 @@ export function buildGlassesFromAsset(asset, opts = {}) {
 
   const frameMat = new THREE.MeshPhysicalMaterial({
     // acetate: soft body, glossy surface. Metalness made every frame look like grey plastic.
-    color: new THREE.Color(frameColor), roughness: 0.32, metalness: 0,
-    clearcoat: 0.85, clearcoatRoughness: 0.18,
+    color: new THREE.Color(frameColor), roughness: 0.28, metalness: 0,
+    clearcoat: 1, clearcoatRoughness: 0.09, envMapIntensity: 1.1, sheen: 0.15,
     transparent: frameOpacity < 1, opacity: frameOpacity,
   });
-  const lensMat = new THREE.MeshStandardMaterial({
-    color: lensSpec.color, transparent: true, opacity: lensOpacity,
-    roughness: 0.12, metalness: 0, side: THREE.DoubleSide, depthWrite: false,
+  // real lens glass: transmissive with a tint, so it refracts and catches highlights
+  const lensMat = new THREE.MeshPhysicalMaterial({
+    color: lensSpec.color, transparent: true, opacity: clamp(lensOpacity + 0.35, 0.3, 0.95),
+    transmission: clamp(1 - lensOpacity * 1.2, 0.25, 0.92), ior: 1.52, thickness: 0.05,
+    roughness: 0.03, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.03,
+    side: THREE.DoubleSide, depthWrite: false,
   });
 
   const group = buildWearable(asset, opts, { frameMat, lensMat });

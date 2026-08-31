@@ -80,6 +80,19 @@ export function polyFromProfile(r, cx = 0, cy = 0, grow = 0) {
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 /**
+ * The end piece bridges the gap between the outer edge of a rim and the outer edge of
+ * the frame that was actually traced (normalised to 1 wide). Without it the frame came
+ * out as two rims stuck together and lost the wide wings the uploaded pair had.
+ */
+function endPieceOf(rimOuterX, y, rimW) {
+  // start it INSIDE the rim: the rim is an oval, so at the end piece's height its outer
+  // edge is well short of the widest point and a butt joint left a floating block
+  const x0 = rimOuterX - rimW * 1.6;
+  const w = clamp(0.5 - x0, rimW * 1.8, 0.2);
+  return { x: x0 + w / 2, y, w, h: rimW * 1.35, size: rimW * 1.1 };
+}
+
+/**
  * Measurements → a buildable frame. Everything is symmetric by construction and in
  * the asset's normalised space (frame ≈ 1 wide, y up, origin between the eyes).
  */
@@ -115,7 +128,7 @@ export function eyewearSpec(asset, n = 128) {
       thick: rimW * 0.9,
       arch: lensH * 0.10,
     },
-    endPiece: { x: halfGap + lensW / 2 + rimW * 0.30, y: centreY + lensH * 0.30, size: rimW * 1.1 },
+    endPiece: endPieceOf(halfGap + lensW / 2 + rimW, centreY + lensH * 0.16, rimW),
     wrap: 0.13,                                  // radians each lens turns back — real frames are not flat
     templeLen: asset.dimensions?.templeLen ?? 1.05,
     templeDrop: asset.dimensions?.templeDrop ?? 0.12,

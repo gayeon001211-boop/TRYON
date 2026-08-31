@@ -64,6 +64,15 @@ export function drawAssetFront(ctx, asset, opts = {}) {
     ctx.fill('evenodd');
   }
 
+  // end pieces: the wings out to the frame's real outer edge
+  const e = spec.endPiece;
+  for (const sign of [-1, 1]) {
+    ctx.beginPath();
+    const x0 = sign > 0 ? e.x - e.w / 2 : -(e.x + e.w / 2);
+    ctx.roundRect(x0, -(e.y + e.h / 2), e.w, e.h, e.h * 0.4);
+    ctx.fill();
+  }
+
   // bridge: an arched bar between the rims
   const b = spec.bridge;
   ctx.strokeStyle = frameColor;

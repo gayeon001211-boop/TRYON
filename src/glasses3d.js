@@ -5,7 +5,7 @@
 
 import * as THREE from 'three';
 import { FACE_OVAL, ovalFanIndex } from './faceMesh.js';
-import { buildGlassesFromAsset } from './glassesModel.js';
+import { buildGlassesFromAsset, studioEnvironment } from './glassesModel.js';
 
 export { eulerFromLandmarks } from './frame.js';
 
@@ -24,7 +24,8 @@ export class Glasses3DLayer {
 
     // the old rig (1.4 + 1.6 + a blue rim) blew out the frame texture and put a blue
     // cast on everything — an olive lens came out grey-blue. Keep it near 1.0 total.
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+    this.scene.environment = studioEnvironment(this.renderer);
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.55));
     const key = new THREE.DirectionalLight(0xffffff, 1.05); key.position.set(1, 1, 2);
     const rimL = new THREE.DirectionalLight(0xd8e2f0, 0.22); rimL.position.set(-1, 0.5, -1);
     this.scene.add(key, rimL);
