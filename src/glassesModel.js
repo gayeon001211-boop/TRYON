@@ -93,7 +93,7 @@ export function buildGlassesFromAsset(asset, opts = {}) {
   });
   const lensMat = new THREE.MeshStandardMaterial({
     color: lensSpec.color, transparent: true, opacity: lensOpacity,
-    roughness: 0.08, metalness: 0.1, side: THREE.DoubleSide, depthWrite: false,
+    roughness: 0.12, metalness: 0, side: THREE.DoubleSide, depthWrite: false,
   });
 
   // thickness offsets the lens openings inward/outward; outline is untouched
@@ -128,11 +128,18 @@ export function buildGlassesFromAsset(asset, opts = {}) {
     }
     uv.needsUpdate = true;
     const decalMat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false });
-    new THREE.TextureLoader().load(asset.frontTexture, tex => {
-      tex.colorSpace = THREE.SRGBColorSpace;
-      decalMat.map = tex; decalMat.needsUpdate = true;
-    });
     const decal = new THREE.Mesh(decalGeo, decalMat);
+    decal.visible = false;                      // an unloaded map would render as a white plate
+    new THREE.TextureLoader().load(
+      asset.frontTexture,
+      tex => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = 8;
+        decalMat.map = tex; decalMat.needsUpdate = true; decal.visible = true;
+      },
+      undefined,
+      () => { decal.visible = false; },
+    );
     decal.position.z = depth / 2 + 0.004;
     decal.renderOrder = 3;
     group.add(decal);

@@ -274,3 +274,22 @@ export function polyArea(poly) {
 export function normalisePoly(poly, center, scale) {
   return poly.map(([x, y]) => [(x - center.x) / scale, -(y - center.y) / scale]);
 }
+
+/**
+ * Chaikin corner cutting on a closed ring — turns the staircase left by a pixel
+ * mask into a smooth curve. Each pass doubles the point count, so simplify first.
+ */
+export function smoothRing(ring, passes = 2) {
+  let r = ring;
+  for (let p = 0; p < passes; p++) {
+    if (r.length < 4) return r;
+    const out = new Array(r.length * 2);
+    for (let i = 0; i < r.length; i++) {
+      const [ax, ay] = r[i], [bx, by] = r[(i + 1) % r.length];
+      out[i * 2] = [ax * 0.75 + bx * 0.25, ay * 0.75 + by * 0.25];
+      out[i * 2 + 1] = [ax * 0.25 + bx * 0.75, ay * 0.25 + by * 0.75];
+    }
+    r = out;
+  }
+  return r;
+}

@@ -130,3 +130,15 @@ const grid = (w, h, fn) => { const m = new Uint8Array(w * h); for (let y = 0; y 
 }
 
 console.log('ok');
+
+// smoothRing: a square's corners get cut, the ring stays closed and inside the hull
+{
+  const { smoothRing } = await import('./src/contour.js');
+  const sq = [[0, 0], [10, 0], [10, 10], [0, 10]];
+  const s = smoothRing(sq, 2);
+  assert.equal(s.length, 16, 'two passes quadruple the points');
+  assert.ok(s.every(([x, y]) => x >= -0.01 && x <= 10.01 && y >= -0.01 && y <= 10.01), 'stays in the hull');
+  const corner = s.some(([x, y]) => x < 0.6 && y < 0.6);
+  assert.ok(!corner, 'the sharp corner is cut away');
+}
+console.log('ok');

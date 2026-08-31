@@ -11,7 +11,7 @@
 
 import {
   largestComponent, connectComponents, fillHoles, morphClose, morphOpen, detectHoles,
-  traceContour, simplify, polyBBox, polyArea, normalisePoly,
+  traceContour, simplify, smoothRing, polyBBox, polyArea, normalisePoly,
 } from './contour.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -191,8 +191,10 @@ export function buildAsset(img, mask, w, h, landmarks) {
   //    confidence flag, not a gate on the geometry.
   const rawRing = traceContour(solid, w, h);
   if (rawRing.length < 12) return fail('no contour');
-  const ringEps = Math.max(1.5, (w + h) / 400);
-  const outlinePx = simplify(rawRing, ringEps);
+  // keep the organic detail: a light DP pass, then Chaikin to round the pixel staircase.
+  // A coarse eps here is what turned a bone-shaped frame into a 69-point polygon.
+  const ringEps = Math.max(0.7, (w + h) / 1600);
+  const outlinePx = smoothRing(simplify(rawRing, ringEps), 2);
   const ob = polyBBox(outlinePx);
   stages.outlinePx = outlinePx;
 
@@ -231,8 +233,8 @@ export function buildAsset(img, mask, w, h, landmarks) {
     const L = holes.filter(hh => hh.cx < ob.cx).sort((a, b) => b.area - a.area)[0];
     const R = holes.filter(hh => hh.cx > ob.cx).sort((a, b) => b.area - a.area)[0];
     if (L && R) {
-      lensLpx = simplify(traceContour(L.mask, w, h), ringEps);
-      lensRpx = simplify(traceContour(R.mask, w, h), ringEps);
+      lensLpx = smoothRing(simplify(traceContour(L.mask, w, h), ringEps), 2);
+      lensRpx = smoothRing(simplify(traceContour(R.mask, w, h), ringEps), 2);
     } else hasHoles = false;
   }
   if (!lensLpx) {
