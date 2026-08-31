@@ -3,6 +3,7 @@
 // pulled out of the uploaded photo.
 
 import * as THREE from 'three';
+import { eyewearSpec, polyFromProfile } from './eyewear.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -18,16 +19,6 @@ function centroid(poly) {
   for (const [px, py] of poly) { x += px; y += py; }
   return [x / poly.length, y / poly.length];
 }
-function insetPoly(poly, d) {
-  if (!d) return poly;
-  const [cx, cy] = centroid(poly);
-  return poly.map(([x, y]) => {
-    const dx = x - cx, dy = y - cy, len = Math.hypot(dx, dy) || 1;
-    const k = Math.max(0.02, len - d) / len;
-    return [cx + dx * k, cy + dy * k];
-  });
-}
-
 function shapeFromPoly(poly) {
   const s = new THREE.Shape();
   poly.forEach(([x, y], i) => (i ? s.lineTo(x, y) : s.moveTo(x, y)));
@@ -41,16 +32,16 @@ function pathFromPoly(poly) {
   return p;
 }
 
-function lensSurface(poly, mat, z) {
+function lensSurface(poly, mat, z, bulge = 0.02) {
   const geo = new THREE.ShapeGeometry(shapeFromPoly(poly), 16);
   const [cx, cy] = centroid(poly);
   const pos = geo.attributes.position;
   for (let i = 0; i < pos.count; i++) {
     const dx = pos.getX(i) - cx, dy = pos.getY(i) - cy;
-    pos.setZ(i, z + 0.03 * Math.max(0, 1 - (dx * dx + dy * dy) / 0.05));
+    pos.setZ(i, z + bulge * Math.max(0, 1 - (dx * dx + dy * dy) / 0.05));
   }
   geo.computeVertexNormals();
-  return new THREE.Mesh(geo, mat);
+  const m = new THREE.Mesh(geo, mat); m.name = 'lens'; return m;
 }
 
 /** Rounded-rectangle cross-section: temples are flat blades, not round rods. */
@@ -72,72 +63,108 @@ function bladeShape(halfW, halfH) {
  */
 function templeMesh(hinge, sign, mat, dim, thickness) {
   const [hx, hy] = hinge;
-  const len = dim.templeLen ?? 1.35;
+  const len = dim.templeLen ?? 1.05;
   const drop = dim.templeDrop ?? 0.12;
-  const halfH = clamp((dim.rimRatio ?? 0.09) * 0.42, 0.012, 0.042) * thickness;
-  const halfW = halfH * 0.42;
+  const halfH = clamp((dim.rimRatio ?? 0.09) * 0.62, 0.020, 0.050) * thickness;
+  const halfW = halfH * 0.38;
 
   const path = new THREE.CatmullRomCurve3([
     new THREE.Vector3(hx, hy, 0.03),
-    new THREE.Vector3(hx + sign * 0.015, hy - drop * 0.05, -0.10),
-    new THREE.Vector3(hx + sign * 0.02, hy - drop * 0.22, -len * 0.55),
-    new THREE.Vector3(hx + sign * 0.018, hy - drop * 0.55, -len * 0.84),
-    new THREE.Vector3(hx + sign * 0.010, hy - drop * 1.60, -len * 1.00),   // over the ear
-    new THREE.Vector3(hx + sign * 0.004, hy - drop * 2.60, -len * 0.96),   // hooked in behind it
+    new THREE.Vector3(hx + sign * 0.012, hy - drop * 0.04, -0.10),
+    new THREE.Vector3(hx + sign * 0.016, hy - drop * 0.14, -len * 0.58),
+    new THREE.Vector3(hx + sign * 0.014, hy - drop * 0.38, -len * 0.86),
+    new THREE.Vector3(hx + sign * 0.008, hy - drop * 0.85, -len * 1.00),   // over the ear
+    new THREE.Vector3(hx + sign * 0.002, hy - drop * 1.25, -len * 0.95),   // short hook behind it
   ]);
 
   const geo = new THREE.ExtrudeGeometry(bladeShape(halfW, halfH), {
     extrudePath: path, steps: 60, bevelEnabled: false, curveSegments: 8,
   });
 
-  // taper: shrink the cross-section towards the tip, around the path itself
-  const pos = geo.attributes.position, p = new THREE.Vector3();
-  const z0 = 0.03, z1 = -len * 1.00;
-  for (let i = 0; i < pos.count; i++) {
-    const t = clamp((z0 - pos.getZ(i)) / (z0 - z1), 0, 1);
-    path.getPoint(t, p);
-    const k = 1 - 0.42 * t * t;
-    pos.setXYZ(i, p.x + (pos.getX(i) - p.x) * k, p.y + (pos.getY(i) - p.y) * k, pos.getZ(i));
-  }
+  // ponytail: no taper. Deriving the curve parameter from z folded the blade back over
+  // the lens near the hinge, and plenty of real temples are a constant section anyway.
   geo.computeVertexNormals();
-  return new THREE.Mesh(geo, mat);
+  const m = new THREE.Mesh(geo, mat); m.name = 'temple'; return m;
 }
 
 
+/** A rim: the lens opening cut out of an outward offset of itself, extruded and rounded. */
+function rimMesh(spec, cx, mat) {
+  const inner = polyFromProfile(spec.lensR, 0, 0);
+  const outer = polyFromProfile(spec.lensR, 0, 0, spec.rimW);
+  const shape = shapeFromPoly(outer);
+  shape.holes = [pathFromPoly([...inner].reverse())];
+  const d = spec.depth;
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: d, bevelEnabled: true, bevelThickness: d * 0.2, bevelSize: spec.rimW * 0.14,
+    bevelSegments: 3, curveSegments: 6,
+  });
+  geo.translate(cx, spec.centreY, -d / 2);
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, mat); m.name = 'rim'; return m;
+}
+
+/** The bridge: an arched bar between the two rims, same section as the rim. */
+function bridgeMesh(spec, mat) {
+  const b = spec.bridge, half = b.span / 2, t = b.thick / 2;
+  const path = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-half - spec.rimW * 0.4, b.y, 0),
+    new THREE.Vector3(-half * 0.5, b.y + b.arch * 0.8, 0.004),
+    new THREE.Vector3(0, b.y + b.arch, 0.006),
+    new THREE.Vector3(half * 0.5, b.y + b.arch * 0.8, 0.004),
+    new THREE.Vector3(half + spec.rimW * 0.4, b.y, 0),
+  ]);
+  const geo = new THREE.ExtrudeGeometry(bladeShape(spec.depth * 0.45, t), {
+    extrudePath: path, steps: 40, bevelEnabled: false, curveSegments: 8,
+  });
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, mat); m.name = 'bridge'; return m;
+}
+
+/** End piece: the little block that carries the hinge, out at the temple side of a rim. */
+function endPieceMesh(spec, sign, mat) {
+  const e = spec.endPiece, s = e.size;
+  const geo = new THREE.BoxGeometry(s * 1.1, s * 0.75, spec.depth * 1.5, 1, 1, 1);
+  geo.translate(sign * e.x, e.y, -spec.depth * 0.25);
+  const m = new THREE.Mesh(geo, mat); m.name = 'endPiece'; return m;
+}
+
 /**
- * A normal map from the texture's own shading. A front photo carries no depth, but the
- * light and shade painted on the frame do describe its surface — Sobel over luminance
- * turns that into relief, so the extrusion stops reading as a flat slab.
- * ponytail: shading-as-height is an illusion, not a measurement; a depth model would do better.
+ * Build a wearable frame from the measurements of the uploaded one.
+ * The silhouette that was traced off the photo drives every dimension here, but the
+ * result is symmetric, has a real bridge, end pieces and hinged temples, and rounded
+ * mouldable sections — something a person could actually put on.
  */
-function reliefFromTexture(image, strength = 1) {
-  const w = Math.min(image.width || 256, 256), h = Math.min(image.height || 256, 256);
-  const c = document.createElement('canvas'); c.width = w; c.height = h;
-  const ctx = c.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(image, 0, 0, w, h);
-  const src = ctx.getImageData(0, 0, w, h), d = src.data;
-  const lum = new Float32Array(w * h);
-  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
-    lum[p] = d[i + 3] < 8 ? 0.5 : (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255;
+function buildWearable(asset, opts, mats) {
+  const { frameMat, lensMat } = mats;
+  const spec = eyewearSpec(asset);
+  const group = new THREE.Group();
+  group.name = 'glasses';
+
+  // a real lens is seated in a groove: cut it slightly larger than the opening so its
+  // edge tucks under the rim, otherwise the rim's inner wall shows through the tint
+  const lensPoly = polyFromProfile(spec.lensR, 0, 0, spec.rimW * 0.3);
+  for (const sign of [-1, 1]) {
+    // each eye is its own group so it can wrap back towards the face
+    const eye = new THREE.Group();
+    eye.add(rimMesh(spec, 0, frameMat));
+    const lens = lensSurface(lensPoly, lensMat, 0, 0);
+    lens.position.set(0, spec.centreY, 0);
+    eye.add(lens);
+    eye.position.x = sign * spec.halfGap;
+    eye.rotation.y = -sign * spec.wrap;
+    group.add(eye);
   }
-  const out = ctx.createImageData(w, h), o = out.data;
-  const at = (x, y) => lum[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    const gx = (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1))
-             - (at(x - 1, y - 1) + 2 * at(x - 1, y) + at(x - 1, y + 1));
-    const gy = (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1))
-             - (at(x - 1, y - 1) + 2 * at(x, y - 1) + at(x + 1, y - 1));
-    const nx = -gx * strength, ny = -gy * strength, nz = 1;
-    const len = Math.hypot(nx, ny, nz), i = (y * w + x) * 4;
-    o[i] = (nx / len * 0.5 + 0.5) * 255;
-    o[i + 1] = (ny / len * 0.5 + 0.5) * 255;
-    o[i + 2] = (nz / len * 0.5 + 0.5) * 255;
-    o[i + 3] = 255;
+
+  if (spec.bridge.needed) group.add(bridgeMesh(spec, frameMat));
+  for (const sign of [-1, 1]) {
+    group.add(endPieceMesh(spec, sign, frameMat));
+    const hinge = [sign * spec.endPiece.x, spec.endPiece.y - spec.endPiece.size * 0.1];
+    group.add(templeMesh(hinge, sign, frameMat, {
+      templeLen: spec.templeLen, templeDrop: spec.templeDrop, rimRatio: spec.rimW * 1.6,
+    }, opts.thickness ?? 1));
   }
-  ctx.putImageData(out, 0, 0);
-  const tex = new THREE.CanvasTexture(c);
-  tex.needsUpdate = true;
-  return tex;
+  return group;
 }
 
 /**
@@ -146,20 +173,15 @@ function reliefFromTexture(image, strength = 1) {
  * @returns THREE.Group  (name 'glasses', ~1 unit wide, origin at frame centre)
  */
 export function buildGlassesFromAsset(asset, opts = {}) {
-  const g = asset.geometry;
-  const dim = asset.dimensions || {};
-  const thickness = opts.thickness ?? 1;
-
   const frameColor = opts.frameColor || asset.frameColor || '#222';
   const lensSpec = parseRGBA(opts.lensColor || asset.lensColor || '#ffffff');
   const lensOpacity = clamp(opts.lensOpacity ?? asset.lensOpacity ?? 0.12, 0.02, 0.7);
   const frameOpacity = clamp(opts.frameOpacity ?? 1, 0.2, 1);
 
-  const group = new THREE.Group();
-  group.name = 'glasses';
-
-  const frameMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(frameColor), roughness: 0.4, metalness: 0.25,
+  const frameMat = new THREE.MeshPhysicalMaterial({
+    // acetate: soft body, glossy surface. Metalness made every frame look like grey plastic.
+    color: new THREE.Color(frameColor), roughness: 0.32, metalness: 0,
+    clearcoat: 0.85, clearcoatRoughness: 0.18,
     transparent: frameOpacity < 1, opacity: frameOpacity,
   });
   const lensMat = new THREE.MeshStandardMaterial({
@@ -167,69 +189,7 @@ export function buildGlassesFromAsset(asset, opts = {}) {
     roughness: 0.12, metalness: 0, side: THREE.DoubleSide, depthWrite: false,
   });
 
-  // thickness offsets the lens openings inward/outward; outline is untouched
-  const rimInset = (thickness - 1) * (dim.rimRatio ?? 0.09) * 0.5;
-  const lensL = insetPoly(g.lensL, rimInset);
-  const lensR = insetPoly(g.lensR, rimInset);
-
-  // frame: extrude the outline with the two openings as holes
-  const shape = shapeFromPoly(g.outline);
-  shape.holes = [pathFromPoly([...lensL].reverse()), pathFromPoly([...lensR].reverse())];
-  const depth = clamp(dim.depth ?? 0.06, 0.02, 0.16) * thickness;
-  const frameGeo = new THREE.ExtrudeGeometry(shape, {
-    depth, bevelEnabled: true, bevelThickness: depth * 0.25, bevelSize: depth * 0.2, bevelSegments: 2,
-    curveSegments: 4,
-  });
-  frameGeo.translate(0, 0, -depth / 2);
-  frameGeo.computeVertexNormals();
-  group.add(new THREE.Mesh(frameGeo, frameMat));
-
-  // lens surfaces sit just proud of the frame front
-  group.add(lensSurface(lensL, lensMat, depth * 0.1));
-  group.add(lensSurface(lensR, lensMat, depth * 0.1));
-
-  // the real frame pixels, mapped onto the front face — the uploaded design, on 3D geometry
-  if (asset.frontTexture && asset.textureBox && opts.texture !== false) {
-    const decalShape = shapeFromPoly(g.outline);
-    decalShape.holes = [pathFromPoly([...lensL].reverse()), pathFromPoly([...lensR].reverse())];
-    const decalGeo = new THREE.ShapeGeometry(decalShape, 12);
-    const tb = asset.textureBox, pos = decalGeo.attributes.position, uv = decalGeo.attributes.uv;
-    for (let i = 0; i < pos.count; i++) {
-      uv.setXY(i, (pos.getX(i) - tb.x0) / tb.w, (pos.getY(i) - tb.y0) / tb.h);
-    }
-    uv.needsUpdate = true;
-    // lit, so the relief below actually shows; roughness matches the frame material
-    const decalMat = new THREE.MeshStandardMaterial({
-      transparent: true, depthWrite: false, roughness: 0.45, metalness: 0.05,
-    });
-    const decal = new THREE.Mesh(decalGeo, decalMat);
-    decal.visible = false;                      // an unloaded map would render as a white plate
-    new THREE.TextureLoader().load(
-      asset.frontTexture,
-      tex => {
-        tex.colorSpace = THREE.SRGBColorSpace;
-        tex.anisotropy = 8;
-        decalMat.map = tex;
-        try {
-          decalMat.normalMap = reliefFromTexture(tex.image, 2.2);
-          decalMat.normalScale = new THREE.Vector2(0.85, 0.85);
-        } catch { /* relief is a nicety; the flat texture still shows */ }
-        decalMat.needsUpdate = true; decal.visible = true;
-        opts.onReady?.();          // a one-shot renderer must draw again once this lands
-      },
-      undefined,
-      () => { decal.visible = false; },
-    );
-    decal.position.z = depth / 2 + 0.004;
-    decal.renderOrder = 3;
-    group.add(decal);
-    group.userData.decalMat = decalMat;
-  }
-
-  // temples
-  group.add(templeMesh(g.hingeL, -1, frameMat, dim, thickness));
-  group.add(templeMesh(g.hingeR, 1, frameMat, dim, thickness));
-
+  const group = buildWearable(asset, opts, { frameMat, lensMat });
   group.userData.frameMat = frameMat;
   group.userData.lensMat = lensMat;
   group.userData.assetId = asset.id;

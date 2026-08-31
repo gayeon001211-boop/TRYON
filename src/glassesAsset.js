@@ -29,41 +29,6 @@ function ellipsePoly(cx, cy, rx, ry, n = 28) {
 }
 
 /**
- * Cut the actual frame pixels out of the source: the region inside the traced outline
- * and OUTSIDE the lens openings, everything else transparent. This is the texture that
- * gets mapped onto the 3D model, so the real material / colour / print is preserved —
- * it is not pasted flat, it rides on the extruded geometry.
- * Browser only (needs a canvas); returns a PNG data URL, or null under node.
- */
-function buildFrontTexture(srcCanvas, ob, outlinePx, lensLpx, lensRpx) {
-  if (typeof document === 'undefined') return null;
-  const cap = 512;
-  const k = Math.min(1, cap / ob.w);
-  const tw = Math.max(8, Math.round(ob.w * k)), th = Math.max(8, Math.round(ob.h * k));
-  const c = document.createElement('canvas'); c.width = tw; c.height = th;
-  const cx = c.getContext('2d');
-  cx.drawImage(srcCanvas, ob.x0, ob.y0, ob.w, ob.h, 0, 0, tw, th);
-
-  const trace = (ctx, poly) => {
-    poly.forEach(([x, y], i) => {
-      const px = (x - ob.x0) * k, py = (y - ob.y0) * k;
-      i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
-    });
-    ctx.closePath();
-  };
-  // frame mask = outline minus the two lens holes
-  const mc = document.createElement('canvas'); mc.width = tw; mc.height = th;
-  const mx = mc.getContext('2d');
-  mx.fillStyle = '#fff';
-  mx.beginPath(); trace(mx, outlinePx); trace(mx, lensLpx); trace(mx, lensRpx);
-  mx.fill('evenodd');
-
-  cx.globalCompositeOperation = 'destination-in';
-  cx.drawImage(mc, 0, 0);
-  return c.toDataURL('image/png');
-}
-
-/**
  * Foreground mask for a product shot on a plain background — no SAM, no face needed.
  * Corner-samples the background colour and keys it out; then the glasses (frame AND
  * green/tinted lenses, which differ from the wall) is the foreground.
@@ -91,18 +56,54 @@ export function foregroundFromBackground(img, w, h) {
 }
 
 /** Zero the mask outside a band around the eyes, so hair / forehead / chin can't leak in. */
-function bandCrop(mask, w, h, lm) {
+/**
+ * Keep only what sits in the band where glasses live: a box around the eye line,
+ * *rotated with that line*. An axis-aligned box let a tilted selfie pull in the desk
+ * and the phone behind the head, and `connectComponents` then welded them to the frame.
+ * Returns the cropped mask; `touched` reports how much of the band edge it reaches.
+ */
+export function bandCrop(mask, w, h, lm) {
   if (!lm || !lm[33] || !lm[263]) return mask.slice();
   const eL = lm[33], eR = lm[263];
-  const span = Math.hypot((eR.x - eL.x) * w, (eR.y - eL.y) * h);
+  const ex = (eR.x - eL.x) * w, ey = (eR.y - eL.y) * h;
+  const span = Math.hypot(ex, ey);
+  const ca = ex / span, sa = ey / span;                 // unit vector along the eye line
   const midX = ((eL.x + eR.x) / 2) * w, midY = ((eL.y + eR.y) / 2) * h;
-  const x0 = midX - span * 1.15, x1 = midX + span * 1.15;
-  const y0 = midY - span * 0.72, y1 = midY + span * 0.60;
+  // a frame is ~1.0-1.35x the eye span wide and sits just above to just below the eyes
+  const halfU = span * 1.00, upV = span * 0.55, downV = span * 0.45;
   const out = new Uint8Array(mask.length);
-  for (let y = Math.max(0, y0 | 0); y < Math.min(h, y1 | 0); y++)
-    for (let x = Math.max(0, x0 | 0); x < Math.min(w, x1 | 0); x++)
-      out[y * w + x] = mask[y * w + x];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x;
+    if (!mask[i]) continue;
+    const dx = x - midX, dy = y - midY;
+    const u = dx * ca + dy * sa;                        // along the eye line
+    const v = -dx * sa + dy * ca;                       // perpendicular, +down
+    if (Math.abs(u) <= halfU && v >= -upV && v <= downV) out[i] = 1;
+  }
   return out;
+}
+
+/**
+ * Glasses are a mirrored pair. Split the mask on the face's own vertical axis and
+ * compare the two halves — a blob that is all on one side (a phone, a hand, hair) is
+ * not a frame, and the caller can say so instead of modelling it.
+ */
+export function pairBalance(mask, w, h, lm) {
+  if (!lm || !lm[33] || !lm[263]) return { ok: true, ratio: 1 };
+  const eL = lm[33], eR = lm[263];
+  const ex = (eR.x - eL.x) * w, ey = (eR.y - eL.y) * h;
+  const span = Math.hypot(ex, ey) || 1;
+  const ca = ex / span, sa = ey / span;
+  const midX = ((eL.x + eR.x) / 2) * w, midY = ((eL.y + eR.y) / 2) * h;
+  let left = 0, right = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (!mask[y * w + x]) continue;
+    const u = (x - midX) * ca + (y - midY) * sa;
+    if (u < 0) left++; else right++;
+  }
+  const lo = Math.min(left, right), hi = Math.max(left, right);
+  const ratio = hi ? lo / hi : 0;
+  return { ok: ratio >= 0.34, ratio: +ratio.toFixed(3), left, right };
 }
 
 /** Erode by r, return the shell (mask minus eroded) — pixels near the outer boundary. */
@@ -161,17 +162,10 @@ function colourHoles(mask, img, w, h, frameRGB, ob) {
 
 export function buildAsset(img, mask, w, h, landmarks) {
   const stages = {};
-  // a drawable copy of the source, for the front texture
-  let srcCanvas = null;
-  if (typeof document !== 'undefined') {
-    srcCanvas = document.createElement('canvas');
-    srcCanvas.width = w; srcCanvas.height = h;
-    srcCanvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(img.data), w, h), 0, 0);
-  }
   const fail = reason => ({
     ok: false, reason,
     geometry: fallbackGeometry(),
-    dimensions: { aspect: 2.6, rimRatio: 0.09, templeLen: 1.35, templeDrop: 0.12, depth: 0.06 },
+    dimensions: { aspect: 2.6, rimRatio: 0.09, templeLen: 1.05, templeDrop: 0.12, depth: 0.045 },
     frameColor: '#3a3a3a', lensColor: '#ffffff', lensOpacity: 0.10,
     placement: { spanRatio: 1.55, yRatio: -0.05 },
     quality: { hasHoles: false, contourPoints: 0, score: 0 },
@@ -184,7 +178,9 @@ export function buildAsset(img, mask, w, h, landmarks) {
   m = largestComponent(m, w, h, 0.15);
   m = morphClose(m, w, h, 1);
   m = morphOpen(m, w, h, 1);
-  const joined = connectComponents(m, w, h);        // bridge a left/right lens pair
+  // crop again after joining: connectComponents can bridge to something outside the band
+  const joined = bandCrop(connectComponents(m, w, h), w, h, landmarks);
+  const pair = pairBalance(joined, w, h, landmarks);
   const solid = fillHoles(joined, w, h);
   stages.cleanMask = m;
   stages.solidMask = solid;
@@ -260,12 +256,6 @@ export function buildAsset(img, mask, w, h, landmarks) {
   const lensL = normalisePoly(lensLpx, centre, scale);
   const lensR = normalisePoly(lensRpx, centre, scale);
 
-  // the real frame pixels, cut to the frame shape, + where they sit in model space
-  const frontTexture = buildFrontTexture(srcCanvas, ob, outlinePx, lensLpx, lensRpx);
-  const textureBox = {
-    x0: (ob.x0 - centre.x) / scale, y0: -(ob.y1 - centre.y) / scale,
-    w: ob.w / scale, h: ob.h / scale,
-  };
 
   const near = outline.filter(([, y]) => Math.abs(y) < 0.14);
   const hpool = near.length >= 2 ? near : outline;
@@ -283,7 +273,7 @@ export function buildAsset(img, mask, w, h, landmarks) {
   const dimensions = {
     aspect: +(ob.w / Math.max(1, ob.h)).toFixed(3),
     rimRatio: +rimRatio.toFixed(3),
-    templeLen: 1.35, templeDrop: 0.12,
+    templeLen: 1.05, templeDrop: 0.12,   // ~14 cm arm on a ~14 cm front
     depth: +clamp(0.04 + rimRatio * 0.4, 0.03, 0.14).toFixed(3),
   };
 
@@ -315,8 +305,8 @@ export function buildAsset(img, mask, w, h, landmarks) {
     const eyeSpan = Math.hypot((landmarks[263].x - landmarks[33].x) * w, (landmarks[263].y - landmarks[33].y) * h);
     const eyeMidY = ((landmarks[33].y + landmarks[263].y) / 2) * h;
     if (eyeSpan > 1) {
-      spanRatio = +clamp(ob.w / eyeSpan, 1.15, 2.2).toFixed(3);
-      yRatio = +clamp((ob.cy - eyeMidY) / eyeSpan, -0.3, 0.15).toFixed(3);
+      spanRatio = +clamp(ob.w / eyeSpan, 1.30, 1.90).toFixed(3);
+      yRatio = +clamp((ob.cy - eyeMidY) / eyeSpan, -0.15, 0.10).toFixed(3);
     }
   }
 
@@ -328,12 +318,12 @@ export function buildAsset(img, mask, w, h, landmarks) {
     ok: hasHoles && shapeLooksRight,
     lowConfidence: !(hasHoles && shapeLooksRight),
     geometry: { outline, lensL, lensR, bridge, hingeL, hingeR },
-    frontTexture, textureBox,          // the real frame pixels, mapped onto the model
     dimensions, frameColor, lensColor, lensOpacity,
     placement: { spanRatio, yRatio },
     quality: {
       hasHoles, shapeLooksRight, contourPoints: outline.length,
       lensPoints: lensL.length + lensR.length, maskAreaFrac: +areaFrac.toFixed(4),
+      pairOk: pair.ok, pairRatio: pair.ratio,
       score: +score.toFixed(2),
     },
     stages,

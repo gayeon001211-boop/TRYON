@@ -127,3 +127,34 @@ function synth(kind) {
 }
 
 console.log('ok');
+
+// --- the tilted-selfie failure: a rotated eye line used to let the room in ---
+{
+  const { bandCrop, pairBalance } = await import('./src/glassesAsset.js');
+  const w = 200, h = 200, mask = new Uint8Array(w * h);
+  const put = (x0, y0, x1, y1) => {
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) mask[y * w + x] = 1;
+  };
+  // head tilted ~27°: left eye at (70,110), right eye at (130,80)
+  const lm = []; lm[33] = { x: 70 / w, y: 110 / h }; lm[263] = { x: 130 / w, y: 80 / h };
+  put(58, 96, 88, 124);      // left lens, on the eye line
+  put(112, 66, 142, 94);     // right lens, on the eye line
+  put(6, 6, 46, 40);         // the desk in the corner — must not survive
+
+  const kept = bandCrop(mask, w, h, lm);
+  const inRect = (m, x0, y0, x1, y1) => {
+    let n = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) n += m[y * w + x];
+    return n;
+  };
+  assert.equal(inRect(kept, 0, 0, 50, 50), 0, 'background blob dropped');
+  assert.ok(inRect(kept, 58, 96, 88, 124) > 700, 'left lens kept');
+  assert.ok(inRect(kept, 112, 66, 142, 94) > 700, 'right lens kept');
+
+  // and the pair check accepts two lenses but rejects one lens plus junk
+  assert.equal(pairBalance(kept, w, h, lm).ok, true, 'a mirrored pair passes');
+  const oneSided = new Uint8Array(w * h);
+  for (let y = 96; y < 124; y++) for (let x = 58; x < 88; x++) oneSided[y * w + x] = 1;
+  assert.equal(pairBalance(oneSided, w, h, lm).ok, false, 'a single blob is not a frame');
+}
+console.log('ok');

@@ -37,8 +37,12 @@ npm run build
      → GlassesAsset { ok, geometry{outline,lensL,lensR,bridge,hingeL,hingeR},
         frontTexture, textureBox, dimensions, frameColor, lensColor, lensOpacity,
         placement{spanRatio,yRatio}, quality, stages }
-   ★ outline은 항상 실제 trace. `ok`는 confidence 플래그일 뿐, 특이한 형태를
-     round/square/cat로 절대 안 바꿈. contour 자체가 안 잡힐 때만 fallbackGeometry.
+   ★ (2026-08-31 변경) 추적한 outline은 **최종 형상이 아니라 측정값**이다.
+     `eyewear.js`의 `eyewearSpec`이 렌즈 반경 프로파일을 좌우 대칭화 + 저역통과(하모닉 4)
+     하고, 렌즈 폭/높이·간격·림 두께·깊이를 뽑는다. 모델은 그 치수로 **림 2개 + 브리지 +
+     엔드피스 + 힌지 + 안경다리**를 새로 만든다. 실루엣을 그대로 압출하면 좌우 비대칭에
+     계단이 남아 "스티로폼 조각"이 되고 사람이 쓸 수 있는 형태가 아니기 때문이다.
+     원본의 큰 형태(라운드/사각/캣아이)와 비율·색은 살아남고, 잔굴곡은 정리된다.
  → ExtractModal: front/¾/side 프리뷰(전부 asset에서) + 6단계 debug view → "ADD TO MY FRAMES"
  → store.js (localStorage 'tryon.v2', asset를 JSON으로. frontTexture는 dataURL)
 
@@ -56,7 +60,8 @@ npm run build
 | 파일 | 역할 |
 |---|---|
 | `src/contour.js` | 순수: largestComponent(minRatio), connectComponents, fillHoles, morph, detectHoles, traceContour, simplify(DP), poly helpers |
-| `src/glassesAsset.js` | 순수: `buildAsset` → GlassesAsset. `foregroundFromBackground`. 색·형태 분석, frontTexture 컷 |
+| `src/glassesAsset.js` | 순수: `buildAsset` → GlassesAsset. `foregroundFromBackground`, 회전 `bandCrop`, `pairBalance`. 색·형태 분석 |
+| `src/eyewear.js` | 순수: 측정값 → 착용 가능한 프레임 스펙 (`radialProfile`/`lowPass`/`canonicalLens`/`eyewearSpec`) |
 | `src/assetRender.js` | 2D 캔버스: `drawAssetFront`, `drawAssetAtPose`, `assetThumb` |
 | `src/glassesModel.js` | Three.js: `buildGlassesFromAsset` (extrude + 텍스처 plane + 렌즈 + temple) |
 | `src/glasses3d.js` | Three.js: `Glasses3DLayer` (추적·배치·occluder·contactSheet) |

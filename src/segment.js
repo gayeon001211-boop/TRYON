@@ -61,6 +61,10 @@ export function pickGlassesPoints(lm, w, h) {
     at(50), at(280),                      // cheeks
     at(10), at(152),                      // forehead, chin
     at(234), at(454),                     // outside the temples
+    // the background itself: a selfie has a room in it, and SAM will happily take the
+    // desk behind the head as part of the object unless it is told otherwise
+    [w * 0.03, h * 0.03], [w * 0.97, h * 0.03],
+    [w * 0.03, h * 0.97], [w * 0.97, h * 0.97],
   ];
   return [...pos.map(p => ({ p, label: 1 })), ...neg.map(p => ({ p, label: 0 }))];
 }

@@ -18,7 +18,7 @@ function frame(outline, lensL, lensR, over = {}) {
       hingeL: outline.reduce((a, b) => (b[0] < a[0] ? b : a)),
       hingeR: outline.reduce((a, b) => (b[0] > a[0] ? b : a)),
     },
-    dimensions: { aspect: 2.6, rimRatio: 0.07, templeLen: 1.35, templeDrop: 0.12, depth: 0.055, ...over.dimensions },
+    dimensions: { aspect: 2.6, rimRatio: 0.07, templeLen: 1.05, templeDrop: 0.12, depth: 0.055, ...over.dimensions },
     frameColor: '#171717', lensColor: '#ffffff', lensOpacity: 0.07,
     placement: { spanRatio: 1.5, yRatio: -0.06 },
     quality: { hasHoles: true, contourPoints: outline.length, score: 1 },
