@@ -11,7 +11,7 @@
 
 import {
   largestComponent, connectComponents, fillHoles, morphClose, morphOpen, detectHoles,
-  traceContour, simplify, smoothRing, polyBBox, polyArea, normalisePoly,
+  traceContour, simplify, smoothRing, dilate, polyBBox, polyArea, normalisePoly,
 } from './contour.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -132,7 +132,10 @@ function colourHoles(mask, img, w, h, frameRGB, ob) {
     if (!mask[i]) continue;
     if (dist2(px(img, x, y), frameRGB) > thr2) open[i] = 1;   // clearly not frame material
   }
-  const opened = morphClose(morphOpen(open, w, h, 1), w, h, 1);
+  // the rim's anti-aliased edge blends frame and lens, so those pixels read as "frame"
+  // and the opening comes out a couple of pixels small on every side. Give it back.
+  const grow = Math.max(1, Math.round(Math.min(ob.w, ob.h) * 0.012));
+  const opened = dilate(morphClose(morphOpen(open, w, h, 1), w, h, 1), w, h, grow);
   // connected components of `opened`, keep the big central ones
   const seen = new Uint8Array(mask.length), comps = [];
   for (let i = 0; i < opened.length; i++) {

@@ -113,7 +113,7 @@ export function morphOpen(mask, w, h, r = 1) {
   return dilate(erode(mask, w, h, r), w, h, r);
 }
 
-function dilate(mask, w, h, r) {
+export function dilate(mask, w, h, r) {
   const out = new Uint8Array(mask.length);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     let on = 0;

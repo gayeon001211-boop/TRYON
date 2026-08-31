@@ -68,8 +68,16 @@ export default function ExtractModal({ file, onDone, onCancel }) {
         const sc = new THREE.Scene();
         sc.add(new THREE.AmbientLight(0xffffff, 1.5));
         const l = new THREE.DirectionalLight(0xffffff, 1.4); l.position.set(1, 1, 2); sc.add(l);
-        const cam = new THREE.PerspectiveCamera(32, 1, 0.1, 100); cam.position.set(0, 0, 3.6);
-        const m = grp.clone(true); m.rotation.set(...rot); m.scale.setScalar(2.1); sc.add(m);
+        const m = grp.clone(true); m.rotation.set(...rot); sc.add(m);
+        // frame the whole thing — a fixed scale cropped the temples straight off the side view
+        const box = new THREE.Box3().setFromObject(m);
+        const size = box.getSize(new THREE.Vector3()), mid = box.getCenter(new THREE.Vector3());
+        const aspect = canvas.width / canvas.height;
+        const fov = 32 * Math.PI / 180;
+        const dist = Math.max(size.y / 2 / Math.tan(fov / 2), size.x / 2 / Math.tan(fov / 2) / aspect);
+        const cam = new THREE.PerspectiveCamera(32, aspect, 0.1, 100);
+        cam.position.set(mid.x, mid.y, mid.z + dist * 1.12 + size.z);
+        cam.lookAt(mid);
         r.render(sc, cam); r.dispose();
       };
       renderView(tqRef.current, [-0.15, -0.6, 0]);

@@ -53,19 +53,53 @@ function lensSurface(poly, mat, z) {
   return new THREE.Mesh(geo, mat);
 }
 
+/** Rounded-rectangle cross-section: temples are flat blades, not round rods. */
+function bladeShape(halfW, halfH) {
+  const s = new THREE.Shape(), r = Math.min(halfW, halfH) * 0.8;
+  s.moveTo(-halfW + r, -halfH);
+  s.lineTo(halfW - r, -halfH); s.quadraticCurveTo(halfW, -halfH, halfW, -halfH + r);
+  s.lineTo(halfW, halfH - r); s.quadraticCurveTo(halfW, halfH, halfW - r, halfH);
+  s.lineTo(-halfW + r, halfH); s.quadraticCurveTo(-halfW, halfH, -halfW, halfH - r);
+  s.lineTo(-halfW, -halfH + r); s.quadraticCurveTo(-halfW, -halfH, -halfW + r, -halfH);
+  return s;
+}
+
+/**
+ * A temple: a blade extruded along the hinge → ear path, tapering towards the tip and
+ * curling down behind the ear. The uploaded photo is a front view, so the path is an
+ * estimate — but a flat, tapered, hooked one reads as an arm instead of a pipe.
+ * ponytail: front-only source; a side photo would let us trace the real profile.
+ */
 function templeMesh(hinge, sign, mat, dim, thickness) {
   const [hx, hy] = hinge;
   const len = dim.templeLen ?? 1.35;
   const drop = dim.templeDrop ?? 0.12;
-  const r = clamp((dim.rimRatio ?? 0.09) * 0.6, 0.01, 0.05) * thickness;
-  const pts = [
-    new THREE.Vector3(hx, hy, 0.02),
-    new THREE.Vector3(hx + sign * 0.02, hy, -0.14),
-    new THREE.Vector3(hx + sign * 0.02, hy, -len * 0.72),
-    new THREE.Vector3(hx + sign * 0.02, hy - drop * 0.6, -len * 0.9),
-    new THREE.Vector3(hx + sign * 0.02, hy - drop, -len),
-  ];
-  const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 32, r, 6, false);
+  const halfH = clamp((dim.rimRatio ?? 0.09) * 0.42, 0.012, 0.042) * thickness;
+  const halfW = halfH * 0.42;
+
+  const path = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(hx, hy, 0.03),
+    new THREE.Vector3(hx + sign * 0.015, hy - drop * 0.05, -0.10),
+    new THREE.Vector3(hx + sign * 0.02, hy - drop * 0.22, -len * 0.55),
+    new THREE.Vector3(hx + sign * 0.018, hy - drop * 0.55, -len * 0.84),
+    new THREE.Vector3(hx + sign * 0.010, hy - drop * 1.60, -len * 1.00),   // over the ear
+    new THREE.Vector3(hx + sign * 0.004, hy - drop * 2.60, -len * 0.96),   // hooked in behind it
+  ]);
+
+  const geo = new THREE.ExtrudeGeometry(bladeShape(halfW, halfH), {
+    extrudePath: path, steps: 60, bevelEnabled: false, curveSegments: 8,
+  });
+
+  // taper: shrink the cross-section towards the tip, around the path itself
+  const pos = geo.attributes.position, p = new THREE.Vector3();
+  const z0 = 0.03, z1 = -len * 1.00;
+  for (let i = 0; i < pos.count; i++) {
+    const t = clamp((z0 - pos.getZ(i)) / (z0 - z1), 0, 1);
+    path.getPoint(t, p);
+    const k = 1 - 0.42 * t * t;
+    pos.setXYZ(i, p.x + (pos.getX(i) - p.x) * k, p.y + (pos.getY(i) - p.y) * k, pos.getZ(i));
+  }
+  geo.computeVertexNormals();
   return new THREE.Mesh(geo, mat);
 }
 
