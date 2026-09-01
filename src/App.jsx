@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTryOn } from './useTryOn.js';
 import { smartFit } from './frame.js';
-import { measureFace, averageProfile, withPd, DEFAULT_PD_MM } from './faceProfile.js';
+import { measureFace, averageProfile, withPd, DEFAULT_PD_MM, YAW_LIMIT_DEG } from './faceProfile.js';
 import { PRESETS } from './presets.js';
 import ExtractModal from './ExtractModal.jsx';
 import Thumb from './Thumb.jsx';
@@ -10,6 +10,7 @@ import { load, save } from './store.js';
 const FRAME_COLORS = ['#111111', '#3c3c40', '#c98b2e', '#8a5a2b', '#b9bcc0', '#a92b2b', '#2f4f9b', '#f0ece2'];
 const LENS_COLORS = ['#ffffff', '#3a3a3a', '#6b4a22', '#2b4d8c', '#1c1c1c'];
 const DEFAULT_FIT = { w: 1, h: 1, x: 0, y: 0, scale: 1, r: 0 };
+const MEASURE_FRAMES = 30;      // ~1.2 s of watching the face; the median of these is the profile
 const download = (url, name) => { const a = document.createElement('a'); a.href = url; a.download = name; a.click(); };
 
 // asset defaults overlaid with the user's per-frame tweaks
@@ -95,7 +96,7 @@ export default function App() {
   const measureMe = async () => {
     setMeasuring(true);
     const shots = [];
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < MEASURE_FRAMES; i++) {
       const { lm, size } = sample();
       if (lm && size.w) shots.push(measureFace(lm, size.w, size.h, profile?.pdMm ?? DEFAULT_PD_MM));
       await new Promise(r => setTimeout(r, 40));
@@ -244,6 +245,14 @@ export default function App() {
               <p className="hint">
                 {profile.pdMm === DEFAULT_PD_MM ? 'pd is the adult average — put yours in for real sizes'
                                                 : 'sized to your pd'}
+              </p>
+              {/* every millimetre downstream comes off this one measurement, so say how
+                  well it went: a turned head reads narrow and a shaky one reads anything */}
+              <p className={'hint' + (profile.steady === false ? ' warn' : '')}>
+                {profile.frames}/{MEASURE_FRAMES} frames · ±{profile.spreadMm}mm
+                {Math.abs(profile.yawDeg) > YAW_LIMIT_DEG
+                  ? ` · head turned ${Math.abs(profile.yawDeg).toFixed(0)}° — look straight ahead and measure again, a turned head reads narrow`
+                  : profile.steady === false ? ' · unsteady — hold still and measure again' : ' · steady'}
               </p>
               <div className="row">
                 <button className="tiny ghost" onClick={measureMe} disabled={!faceFound || measuring}>

@@ -7,17 +7,23 @@ one does. Those are modelled here, once, and exported as glTF; at run time the b
 only has to stretch the right base to the measured dimensions. No Blender is needed to
 use the app.
 
+Every part is built by writing vertex coordinates into a bmesh. Nothing here uses a
+curve, a bevel object, or an object-level rotation or scale: the previous version did,
+and Blender applies object scale in the *local* space that precedes the rotation, so a
+lens circle stood up with rotation=(pi/2,0,0) and scaled (w, 1, h) kept radius 1.0 in
+the axis that became vertical — a two-unit-tall hoop instead of a lens. Coordinates are
+not ambiguous that way. Objects stay at identity from creation to export.
+
 Run:  blender --background --python helper/blender/build_frames.py
 Out:  public/frames/{fullrim,wire,browline,rimless}.glb   (~1 unit wide, +Z forward)
 """
 
 import math
 import os
-import sys
 
 import bpy
 import bmesh
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "public", "frames")
 
@@ -25,7 +31,7 @@ OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "public", "frames"
 # -Z away. Build in Blender's terms and the exporter lands it correctly: everything below
 # uses B(x, y_up, z_back) to translate from the app's convention.
 def B(x, up, back):
-    return (x, back, up)
+    return Vector((x, back, up))
 
 # a frame is normalised to 1.0 across the front, matching eyewearSpec in the app
 LENS_W, LENS_H = 0.38, 0.21
@@ -42,51 +48,124 @@ def clear():
             block.remove(item)
 
 
-def lens_curve(name, cx, rim, squarish=0.0):
-    """A closed lens outline as a bezier circle, optionally squared off."""
-    # stand the circle up in the XZ plane so it faces the viewer
-    bpy.ops.curve.primitive_bezier_circle_add(
-        radius=1.0, location=(cx, 0, 0), rotation=(math.pi / 2, 0, 0)
-    )
-    curve = bpy.context.object
-    curve.name = name
-    curve.scale = (LENS_W / 2 + rim, 1, LENS_H / 2 + rim)
-    # bake rotation and scale into the curve data: leaving them on the object makes the
-    # bevel section follow the object's axes, which distorted every lens
-    bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
-    for p in curve.data.splines[0].bezier_points:
-        p.handle_left_type = p.handle_right_type = "AUTO"
-        if squarish:
-            p.co.x *= 1 + squarish * 0.12
-    return curve
+# ---------------------------------------------------------------- sweeping
+
+def sweep(bm, path, section, closed=False, scale=None):
+    """
+    Push a 2D cross-section along a 3D path and join consecutive rings with quads.
+
+    The section lives in the plane normal to the path, oriented by parallel transport:
+    each ring reuses the previous ring's up vector rotated onto the new tangent, so the
+    section never spins about the path (which is what an object-space bevel does wrong).
+    `scale(i, t)` may narrow a ring — that is how a temple tapers. `closed` joins the
+    last ring back to the first; an open sweep gets flat caps.
+    """
+    n = len(path)
+    tangents = []
+    for i in range(n):
+        a = path[(i - 1) % n] if closed else path[max(0, i - 1)]
+        b = path[(i + 1) % n] if closed else path[min(n - 1, i + 1)]
+        t = (b - a)
+        if t.length < 1e-9:
+            t = Vector((0, 0, 1))
+        tangents.append(t.normalized())
+
+    # seed an up vector that is not parallel to the first tangent
+    seed = Vector((0, 0, 1))
+    if abs(seed.dot(tangents[0])) > 0.9:
+        seed = Vector((1, 0, 0))
+    up = (seed - tangents[0] * seed.dot(tangents[0])).normalized()
+
+    rings = []
+    for i in range(n):
+        t = tangents[i]
+        if i:
+            prev = tangents[i - 1]
+            axis = prev.cross(t)
+            if axis.length > 1e-9:                      # rotate the frame onto the new tangent
+                ang = math.atan2(axis.length, prev.dot(t))
+                up = Matrix.Rotation(ang, 3, axis.normalized()) @ up
+            up = (up - t * up.dot(t)).normalized()
+        side = t.cross(up).normalized()
+        s = scale(i, i / max(1, n - 1)) if scale else 1.0
+        rings.append([bm.verts.new(path[i] + side * (u * s) + up * (v * s)) for u, v in section])
+
+    m = len(section)
+    span = n if closed else n - 1
+    for i in range(span):
+        a, b = rings[i], rings[(i + 1) % n]
+        for j in range(m):
+            k = (j + 1) % m
+            bm.faces.new((a[j], a[k], b[k], b[j]))
+    if not closed:
+        bm.faces.new(list(reversed(rings[0])))
+        bm.faces.new(rings[-1])
+    return rings
 
 
-def rim_from_curve(curve, thickness, depth):
-    """Give an outline a rectangular section: this is the rim itself."""
-    prof = bpy.data.curves.new(curve.name + "_prof", "CURVE")
-    prof.dimensions = "2D"
-    spline = prof.splines.new("POLY")
-    pts = [(-thickness, -depth), (thickness, -depth), (thickness, depth), (-thickness, depth)]  # section
-    spline.points.add(len(pts) - 1)
-    for i, (x, y) in enumerate(pts):
-        spline.points[i].co = (x, y, 0, 1)
-    spline.use_cyclic_u = True
-    obj = bpy.data.objects.new(prof.name, prof)
-    bpy.context.collection.objects.link(obj)
-    curve.data.bevel_mode = "OBJECT"
-    curve.data.bevel_object = obj
-    curve.data.use_fill_caps = True
-    return curve
+def rect(half_w, half_h):
+    return [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)]
 
 
-def temple(sign, thickness, name):
+def disc(r, n=8):
+    return [(math.cos(2 * math.pi * i / n) * r, math.sin(2 * math.pi * i / n) * r) for i in range(n)]
+
+
+def catmull(pts, per=6):
+    """Resample control points into a smooth polyline — a temple bends, it does not kink."""
+    ext = [pts[0]] + list(pts) + [pts[-1]]
+    out = []
+    for i in range(len(ext) - 3):
+        p0, p1, p2, p3 = ext[i:i + 4]
+        for k in range(per):
+            t = k / per
+            t2, t3 = t * t, t * t * t
+            out.append(0.5 * ((2 * p1) + (-p0 + p2) * t
+                              + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
+                              + (-p0 + 3 * p1 - 3 * p2 + p3) * t3))
+    out.append(ext[-1])
+    return out
+
+
+# ---------------------------------------------------------------- parts
+
+def lens_outline(cx, w, h, squarish=0.0, n=64):
+    """
+    A lens outline as a superellipse, written out coordinate by coordinate. squarish=0
+    is an ellipse; higher values square off the corners the way an acetate frame does.
+    """
+    p = 2.0 + squarish * 2.5
+    pts = []
+    for i in range(n):
+        a = 2 * math.pi * i / n
+        ca, sa = math.cos(a), math.sin(a)
+        x = math.copysign(abs(ca) ** (2 / p), ca)
+        y = math.copysign(abs(sa) ** (2 / p), sa)
+        pts.append(B(cx + x * w / 2, y * h / 2, 0.0))
+    return pts
+
+
+def rim(bm, sign, rim_t, depth, brow=False):
+    path = lens_outline(sign * HALF_GAP, LENS_W, LENS_H, squarish=0.25)
+    if not brow:
+        sweep(bm, path, rect(rim_t, depth), closed=True)
+        return
+    # browline: the top arc carries the frame, the lower half thins to a wire
+    def thin(i, _t):
+        return 1.0 if path[i].z >= 0 else 0.34
+    sweep(bm, path, rect(rim_t, depth), closed=True, scale=thin)
+
+
+def bridge(bm, rim_t, depth):
+    span = HALF_GAP - LENS_W / 2
+    ctrl = [B(-span - 0.03, 0.03, 0.0), B(0, 0.075, 0.012), B(span + 0.03, 0.03, 0.0)]
+    sweep(bm, catmull(ctrl, per=8), rect(rim_t, depth * 0.8))
+
+
+def temple(bm, sign, thickness):
     """Hinge to ear: straight run, a bend over the ear, a short hook behind it."""
-    curve = bpy.data.curves.new(name, "CURVE")
-    curve.dimensions = "3D"
-    curve.resolution_u = 12
-    spline = curve.splines.new("NURBS")
     x0 = sign * (HALF_GAP + LENS_W / 2)
-    pts = [
+    ctrl = [
         B(x0, 0.03, 0.02),
         B(x0 + sign * 0.02, 0.02, -0.10),
         B(x0 + sign * 0.02, 0.00, -TEMPLE_LEN * 0.6),
@@ -94,75 +173,37 @@ def temple(sign, thickness, name):
         B(x0 + sign * 0.008, -0.12, -TEMPLE_LEN * 1.0),
         B(x0 + sign * 0.004, -0.17, -TEMPLE_LEN * 0.95),
     ]
-    spline.points.add(len(pts) - 1)
-    for i, (x, y, z) in enumerate(pts):
-        spline.points[i].co = (x, y, z, 1)
-    spline.use_endpoint_u = True
-    spline.order_u = 4
-    obj = bpy.data.objects.new(name, curve)
-    bpy.context.collection.objects.link(obj)
-    curve.bevel_depth = thickness
-    curve.bevel_resolution = 4
-    # a real arm narrows towards the tip
-    taper = bpy.data.curves.new(name + "_taper", "CURVE")
-    taper.dimensions = "2D"
-    ts = taper.splines.new("POLY")
-    ts.points.add(1)
-    ts.points[0].co = (0, 1.0, 0, 1)
-    ts.points[1].co = (1, 0.55, 0, 1)
-    tobj = bpy.data.objects.new(taper.name, taper)
-    bpy.context.collection.objects.link(tobj)
-    curve.taper_object = tobj
-    return obj
+    # a real arm narrows towards the tip; blades are flat, not round rods
+    sweep(bm, catmull(ctrl, per=5), rect(thickness * 0.6, thickness * 1.4),
+          scale=lambda _i, t: 1.0 - 0.45 * t)
 
 
-def bridge(thickness, depth):
-    curve = bpy.data.curves.new("bridge", "CURVE")
-    curve.dimensions = "3D"
-    spline = curve.splines.new("NURBS")
-    span = HALF_GAP - LENS_W / 2
-    pts = [B(-span - 0.02, 0.03, 0.0), B(0, 0.075, 0.01), B(span + 0.02, 0.03, 0.0)]
-    spline.points.add(len(pts) - 1)
-    for i, (x, y, z) in enumerate(pts):
-        spline.points[i].co = (x, y, z, 1)
-    spline.use_endpoint_u = True
-    spline.order_u = 3
-    obj = bpy.data.objects.new("bridge", curve)
-    bpy.context.collection.objects.link(obj)
-    curve.bevel_depth = thickness
-    curve.bevel_resolution = 4
-    return obj
+def hinge(bm, sign, thickness):
+    x = sign * (HALF_GAP + LENS_W / 2 + 0.005)
+    sweep(bm, [B(x - sign * 0.02, 0.03, -0.01), B(x + sign * 0.02, 0.03, -0.01)], disc(thickness * 1.1))
 
 
-def nose_pads():
+def nose_pads(bm):
     """The little pads either side of the bridge — a detail the browser never had."""
-    out = []
     for sign in (-1, 1):
-        bpy.ops.mesh.primitive_uv_sphere_add(radius=0.018, location=B(sign * 0.045, -0.03, 0.03))
-        pad = bpy.context.object
-        pad.scale = (0.6, 0.5, 1.4)
-        pad.name = f"pad{sign}"
-        out.append(pad)
-    return out
+        at = B(sign * 0.045, -0.03, 0.03)
+        # scale goes in the matrix handed to the op, not onto an object
+        m = Matrix.Translation(at) @ Matrix.Diagonal((0.6, 1.4, 0.5, 1.0))
+        bmesh.ops.create_uvsphere(bm, u_segments=10, v_segments=6, radius=0.018, matrix=m)
 
 
-def hinges(thickness):
-    out = []
-    for sign in (-1, 1):
-        bpy.ops.mesh.primitive_cylinder_add(
-            radius=thickness * 1.1, depth=0.05,
-            location=B(sign * (HALF_GAP + LENS_W / 2 + 0.005), 0.03, -0.01),
-            rotation=(0, math.pi / 2, 0),
-        )
-        h = bpy.context.object
-        h.name = f"hinge{sign}"
-        out.append(h)
-    return out
+# ---------------------------------------------------------------- build
+
+def app_bbox(bm):
+    """Bounding box in the app's axes: (width, height, depth)."""
+    xs = [v.co.x for v in bm.verts]
+    ups = [v.co.z for v in bm.verts]
+    backs = [v.co.y for v in bm.verts]
+    return max(xs) - min(xs), max(ups) - min(ups), max(backs) - min(backs)
 
 
 def build(kind):
     clear()
-    parts = []
     if kind == "wire":
         rim_t, depth = 0.008, 0.008
     elif kind == "browline":
@@ -170,31 +211,32 @@ def build(kind):
     else:
         rim_t, depth = 0.022, DEPTH
 
+    bm = bmesh.new()
+    if kind != "rimless":
+        for sign in (-1, 1):
+            rim(bm, sign, rim_t, depth, brow=(kind == "browline"))
+    bridge(bm, rim_t * 0.9, depth)
+    nose_pads(bm)
     for sign in (-1, 1):
-        cx = sign * HALF_GAP
-        if kind == "rimless":
-            continue
-        c = lens_curve(f"rim{sign}", cx, 0.0, squarish=0.0)
-        if kind == "browline":
-            # keep the top arc heavy; the lower half becomes a fine wire
-            c.data.bevel_depth = 0
-        parts.append(rim_from_curve(c, rim_t, depth))
+        hinge(bm, sign, max(0.008, rim_t))
+        temple(bm, sign, max(0.008, rim_t * 0.8))
 
-    parts.append(bridge(rim_t * 0.9, depth))
-    parts += nose_pads()
-    parts += hinges(rim_t)
-    for sign in (-1, 1):
-        parts.append(temple(sign, max(0.008, rim_t * 0.8), f"temple{sign}"))
+    # the app refuses a base whose box does not measure like a frame (baseLooksSane in
+    # glassesModel.js). Fail here instead, loudly, rather than exporting a hoop again.
+    w, h, d = app_bbox(bm)
+    print(f"[tryon] {kind}: {w:.3f} wide × {h:.3f} tall × {d:.3f} deep  (w/h {w / h:.2f})")
+    assert 1.8 < w / h < 5, f"{kind}: w/h {w / h:.2f} is not a frame — the app would reject it"
+    assert d < w * 1.6, f"{kind}: {d:.3f} deep against {w:.3f} wide — too deep"
 
-    for p in parts:
-        p.select_set(True)
-    bpy.context.view_layer.objects.active = parts[0]
-    bpy.ops.object.convert(target="MESH")
-    bpy.ops.object.join()
-    frame = bpy.context.object
-    frame.name = f"frame_{kind}"
+    mesh = bpy.data.meshes.new(f"frame_{kind}")
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new(f"frame_{kind}", mesh)     # identity transform, always
+    bpy.context.collection.objects.link(obj)
+    for poly in mesh.polygons:
+        poly.use_smooth = True
 
-    bpy.ops.object.shade_smooth()
     os.makedirs(OUT_DIR, exist_ok=True)
     path = os.path.abspath(os.path.join(OUT_DIR, f"{kind}.glb"))
     bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=False)

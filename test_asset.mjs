@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildAsset, foregroundFromBackground } from './src/glassesAsset.js';
+import { buildAsset, foregroundFromBackground, pointsFromMask } from './src/glassesAsset.js';
 import { polyBBox } from './src/contour.js';
 
 /* Build a synthetic photo + mask of a pair of glasses.
@@ -126,6 +126,46 @@ function synth(kind) {
   assert.ok(fr < 110 && fg2 < 110, 'frame colour reads dark, got ' + a.frameColor);
 }
 
+
+// pointsFromMask: a design sheet is TWO elevations of the same glasses. The prompt has to
+// point at the front one, in the frame material, and say "not that" about the other.
+{
+  const W = 200, H = 200;
+  const mask = new Uint8Array(W * H);
+  // front view: a rectangular ring, y 20..80, with a hole at x 60..140 / y 35..65
+  for (let y = 20; y <= 80; y++) for (let x = 20; x <= 180; x++) {
+    const inHole = x >= 60 && x <= 140 && y >= 35 && y <= 65;
+    if (!inHole) mask[y * W + x] = 1;
+  }
+  // side view below, deliberately smaller — a solid blob, y 120..170
+  for (let y = 120; y <= 170; y++) for (let x = 40; x <= 120; x++) mask[y * W + x] = 1;
+
+  const pts = pointsFromMask(mask, W, H);
+  const pos = pts.filter(q => q.label === 1), neg = pts.filter(q => q.label === 0);
+  assert.ok(pos.length >= 6, 'enough positives: ' + pos.length);
+  for (const q of pos) {
+    const [x, y] = q.p;
+    assert.equal(mask[y * W + x], 1, `positive (${x},${y}) is on frame material`);
+    assert.ok(y < 100, `positive (${x},${y}) is on the front view, not the side one`);
+  }
+  // no negative inside the lens opening: buildAsset carves those itself and needs a solid
+  // front to do it with — see pointsFromMask
+  assert.ok(!neg.some(q => q.p[0] > 60 && q.p[0] < 140 && q.p[1] > 35 && q.p[1] < 65),
+            'the lens opening is left alone');
+  assert.ok(neg.some(q => q.p[1] >= 120 && q.p[1] <= 170 && q.p[0] >= 40 && q.p[0] <= 120),
+            'a negative sits on the second elevation');
+  // no negative to the left or right of the frame: a pale end piece the key missed
+  // must not be ruled out
+  assert.ok(!neg.some(q => q.p[1] > 20 && q.p[1] < 80 && (q.p[0] < 20 || q.p[0] > 180) && q.p[1] > 5 && q.p[1] < 195),
+            'nothing vetoed beside the frame');
+
+  // scale maps to the full-size image the model is prompted at
+  const big = pointsFromMask(mask, W, H, 4);
+  assert.deepEqual(big[0].p, [pts[0].p[0] * 4, pts[0].p[1] * 4]);
+
+  assert.equal(pointsFromMask(new Uint8Array(W * H), W, H), null, 'an empty mask says nothing');
+}
+
 console.log('ok');
 
 // --- the tilted-selfie failure: a rotated eye line used to let the room in ---
@@ -157,6 +197,46 @@ console.log('ok');
   for (let y = 96; y < 124; y++) for (let x = 58; x < 88; x++) oneSided[y * w + x] = 1;
   assert.equal(pairBalance(oneSided, w, h, lm).ok, false, 'a single blob is not a frame');
 }
+
+// pointsFromMask: a design sheet is TWO elevations of the same glasses. The prompt has to
+// point at the front one, in the frame material, and say "not that" about the other.
+{
+  const W = 200, H = 200;
+  const mask = new Uint8Array(W * H);
+  // front view: a rectangular ring, y 20..80, with a hole at x 60..140 / y 35..65
+  for (let y = 20; y <= 80; y++) for (let x = 20; x <= 180; x++) {
+    const inHole = x >= 60 && x <= 140 && y >= 35 && y <= 65;
+    if (!inHole) mask[y * W + x] = 1;
+  }
+  // side view below, deliberately smaller — a solid blob, y 120..170
+  for (let y = 120; y <= 170; y++) for (let x = 40; x <= 120; x++) mask[y * W + x] = 1;
+
+  const pts = pointsFromMask(mask, W, H);
+  const pos = pts.filter(q => q.label === 1), neg = pts.filter(q => q.label === 0);
+  assert.ok(pos.length >= 6, 'enough positives: ' + pos.length);
+  for (const q of pos) {
+    const [x, y] = q.p;
+    assert.equal(mask[y * W + x], 1, `positive (${x},${y}) is on frame material`);
+    assert.ok(y < 100, `positive (${x},${y}) is on the front view, not the side one`);
+  }
+  // no negative inside the lens opening: buildAsset carves those itself and needs a solid
+  // front to do it with — see pointsFromMask
+  assert.ok(!neg.some(q => q.p[0] > 60 && q.p[0] < 140 && q.p[1] > 35 && q.p[1] < 65),
+            'the lens opening is left alone');
+  assert.ok(neg.some(q => q.p[1] >= 120 && q.p[1] <= 170 && q.p[0] >= 40 && q.p[0] <= 120),
+            'a negative sits on the second elevation');
+  // no negative to the left or right of the frame: a pale end piece the key missed
+  // must not be ruled out
+  assert.ok(!neg.some(q => q.p[1] > 20 && q.p[1] < 80 && (q.p[0] < 20 || q.p[0] > 180) && q.p[1] > 5 && q.p[1] < 195),
+            'nothing vetoed beside the frame');
+
+  // scale maps to the full-size image the model is prompted at
+  const big = pointsFromMask(mask, W, H, 4);
+  assert.deepEqual(big[0].p, [pts[0].p[0] * 4, pts[0].p[1] * 4]);
+
+  assert.equal(pointsFromMask(new Uint8Array(W * H), W, H), null, 'an empty mask says nothing');
+}
+
 console.log('ok');
 
 // --- head pose: a photo taken at an angle measures short, and we undo that ---
@@ -178,4 +258,44 @@ console.log('ok');
   const wild = headPose(null, { ...lm, 1: { x: 0.95, y: 0.5 } });
   assert.ok(wild.kx >= 1);
 }
+
+// pointsFromMask: a design sheet is TWO elevations of the same glasses. The prompt has to
+// point at the front one, in the frame material, and say "not that" about the other.
+{
+  const W = 200, H = 200;
+  const mask = new Uint8Array(W * H);
+  // front view: a rectangular ring, y 20..80, with a hole at x 60..140 / y 35..65
+  for (let y = 20; y <= 80; y++) for (let x = 20; x <= 180; x++) {
+    const inHole = x >= 60 && x <= 140 && y >= 35 && y <= 65;
+    if (!inHole) mask[y * W + x] = 1;
+  }
+  // side view below, deliberately smaller — a solid blob, y 120..170
+  for (let y = 120; y <= 170; y++) for (let x = 40; x <= 120; x++) mask[y * W + x] = 1;
+
+  const pts = pointsFromMask(mask, W, H);
+  const pos = pts.filter(q => q.label === 1), neg = pts.filter(q => q.label === 0);
+  assert.ok(pos.length >= 6, 'enough positives: ' + pos.length);
+  for (const q of pos) {
+    const [x, y] = q.p;
+    assert.equal(mask[y * W + x], 1, `positive (${x},${y}) is on frame material`);
+    assert.ok(y < 100, `positive (${x},${y}) is on the front view, not the side one`);
+  }
+  // no negative inside the lens opening: buildAsset carves those itself and needs a solid
+  // front to do it with — see pointsFromMask
+  assert.ok(!neg.some(q => q.p[0] > 60 && q.p[0] < 140 && q.p[1] > 35 && q.p[1] < 65),
+            'the lens opening is left alone');
+  assert.ok(neg.some(q => q.p[1] >= 120 && q.p[1] <= 170 && q.p[0] >= 40 && q.p[0] <= 120),
+            'a negative sits on the second elevation');
+  // no negative to the left or right of the frame: a pale end piece the key missed
+  // must not be ruled out
+  assert.ok(!neg.some(q => q.p[1] > 20 && q.p[1] < 80 && (q.p[0] < 20 || q.p[0] > 180) && q.p[1] > 5 && q.p[1] < 195),
+            'nothing vetoed beside the frame');
+
+  // scale maps to the full-size image the model is prompted at
+  const big = pointsFromMask(mask, W, H, 4);
+  assert.deepEqual(big[0].p, [pts[0].p[0] * 4, pts[0].p[1] * 4]);
+
+  assert.equal(pointsFromMask(new Uint8Array(W * H), W, H), null, 'an empty mask says nothing');
+}
+
 console.log('ok');

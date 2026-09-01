@@ -116,6 +116,68 @@ export function foregroundFromBackground(img, w, h) {
   return { mask: m, bg, plainBg, spread: +spread.toFixed(1) };
 }
 
+/**
+ * Prompt points for a segmentation model, taken from a rough background-key mask rather
+ * than guessed. `pickGlassesPoints`'s no-face fallback is blind: it drops positives along
+ * one line across the middle of the picture — which on a design sheet is inside a lens
+ * opening — and negatives at the far left and right, which on a wide frame is the frame
+ * itself. This mask already knows where the frame is, even when the key only caught part
+ * of it, so the points land on frame material and in the openings.
+ *
+ * Coordinates come back in this mask's pixels scaled by `scale`, for a model prompted at
+ * the full-size image. Returns null when the mask is too thin to say anything.
+ */
+export function pointsFromMask(mask, w, h, scale = 1) {
+  const blob = largestComponent(mask, w, h, 1);         // ONE view of the frame, not both
+  let x0 = w, y0 = h, x1 = -1, y1 = -1, n = 0;
+  for (let i = 0; i < blob.length; i++) {
+    if (!blob[i]) continue;
+    const x = i % w, y = (i - x) / w;
+    n++;
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+  }
+  if (n < 64 || x1 - x0 < 8 || y1 - y0 < 4) return null;
+
+  const P = (x, y, label) => ({ p: [Math.round(x) * scale, Math.round(y) * scale], label });
+  const pts = [];
+  // positives on the rim: down any column across the frame, the first and last mask pixel
+  // are frame material by construction — top rim and bottom rim
+  for (let k = 1; k <= 7; k++) {
+    const x = Math.round(x0 + (x1 - x0) * k / 8);
+    let top = -1, bot = -1;
+    for (let y = y0; y <= y1; y++) if (blob[y * w + x]) { if (top < 0) top = y; bot = y; }
+    if (top < 0) continue;
+    pts.push(P(x, top, 1));
+    if (bot - top > 4) pts.push(P(x, bot, 1));
+  }
+  // NOT the lens openings, deliberately. buildAsset carves those out itself, from the
+  // mask's geometry and the frame/lens colour split, and it wants a solid frame front to
+  // do it with. Asked to exclude the openings, the model returns rim material only — and
+  // a speckled ribbon of it, which then falls apart into one lens and no bridge. Measured
+  // on the cat-eye sheet: with opening negatives 0.32 and half a frame, without them 0.95.
+  // negatives on whatever the key found ABOVE or BELOW the frame we picked. Every design
+  // sheet is two elevations of the same glasses, and this is what keeps the other one out.
+  // Only pixels outside the chosen frame's own rows qualify: a pale end piece keys out as
+  // its own little component beside the frame, and vetoing that would throw away the part
+  // the key already under-read.
+  const others = [];
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i] || blob[i]) continue;
+    const y = (i - (i % w)) / w;
+    if (y < y0 || y > y1) others.push(i);
+  }
+  for (let k = 0; k < 3 && others.length; k++) {
+    const i = others[Math.floor((k + 0.5) / 3 * others.length)];
+    pts.push(P(i % w, (i - (i % w)) / w, 0));
+  }
+  // and the picture's own corners, which are background in a product shot by definition
+  for (const [x, y] of [[1, 1], [w - 2, 1], [1, h - 2], [w - 2, h - 2]]) pts.push(P(x, y, 0));
+  return pts;
+}
+
 /** Zero the mask outside a band around the eyes, so hair / forehead / chin can't leak in. */
 /**
  * Keep only what sits in the band where glasses live: a box around the eye line,

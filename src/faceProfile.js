@@ -49,6 +49,14 @@ export function measureFace(lm, w, h, pdMm = DEFAULT_PD_MM) {
 
   const tL = at(lm, L.templeL, w, h), tR = at(lm, L.templeR, w, h);
   const eyeMidY = (pL.y + pR.y) / 2;
+
+  // How square-on is the head? A turned head puts the eye midpoint off the midpoint of
+  // the temples, and narrows faceWidthMm with it — the one error the wearer can fix by
+  // looking straight ahead, so it is measured and reported rather than corrected for.
+  // (frame.js's eulerFromLandmarks needs the nose tip and is tuned for 3D pose; this is
+  // the asymmetry that actually biases these numbers.)
+  const faceHalf = dist(tL, tR) / 2 || 1e-3;
+  const off = clamp(((pL.x + pR.x) / 2 - (tL.x + tR.x) / 2) / faceHalf, -1, 1);
   const browY = (at(lm, L.browL, w, h).y + at(lm, L.browR, w, h).y) / 2;
 
   // the arm runs from the hinge (out at the temple) back to the ear, then hooks over it.
@@ -58,6 +66,7 @@ export function measureFace(lm, w, h, pdMm = DEFAULT_PD_MM) {
 
   return {
     pdMm,
+    yawDeg: +(Math.asin(off) * 180 / Math.PI).toFixed(1),
     mmPerPx: +mmPerPx.toFixed(5),
     hasIris,
     pdPx: +pdPx.toFixed(2),
@@ -74,13 +83,26 @@ const median = xs => {
   return s.length % 2 ? s[s.length >> 1] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
 };
 
-/** Median of several frames — a single frame jitters by a millimetre or two. */
+/** Degrees of head turn past which faceWidthMm is measurably short. */
+export const YAW_LIMIT_DEG = 12;
+
+/**
+ * Median of several frames — a single frame jitters by a millimetre or two. It also
+ * reports how the measurement went: how many frames landed, how far apart they were,
+ * and how far the head was turned. Without those three the wearer has no way to tell a
+ * good measurement from a bad one, and every number downstream is scaled by this one.
+ */
 export function averageProfile(samples) {
   const ok = samples.filter(Boolean);
   if (!ok.length) return null;
   const keys = ['pdMm', 'mmPerPx', 'faceWidthMm', 'faceHeightMm', 'browAboveEyeMm', 'bridgeDropMm', 'templeLenMm'];
   const out = { frames: ok.length, hasIris: ok[0].hasIris };
   for (const k of keys) out[k] = +median(ok.map(s => s[k])).toFixed(k === 'mmPerPx' ? 5 : 1);
+  const widths = ok.map(s => s.faceWidthMm).sort((a, b) => a - b);
+  const q = f => widths[Math.min(widths.length - 1, Math.round(f * (widths.length - 1)))];
+  out.spreadMm = +(q(0.9) - q(0.1)).toFixed(1);     // p90−p10: ignores a single bad frame
+  out.yawDeg = +median(ok.map(s => s.yawDeg ?? 0)).toFixed(1);
+  out.steady = out.frames >= 10 && out.spreadMm <= 1.5 && Math.abs(out.yawDeg) <= YAW_LIMIT_DEG;
   return out;
 }
 

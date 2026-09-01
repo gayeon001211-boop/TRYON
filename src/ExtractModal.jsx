@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { detectInImage } from './extract.js';
-import { buildAsset, foregroundFromBackground } from './glassesAsset.js';
+import { buildAsset, foregroundFromBackground, pointsFromMask } from './glassesAsset.js';
 import { drawAssetFront } from './assetRender.js';
 import { eyewearSpec } from './eyewear.js';
 import { frameSpecMm, placementFor } from './faceProfile.js';
@@ -117,7 +117,8 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
     return cx.getImageData(0, 0, w, h);
   }
 
-  function runBuild(imgData, mask, w, h, lm, matrix) {
+  /** Trace a mask into an asset. Nothing is shown yet — the caller decides whether to keep it. */
+  function makeAsset(imgData, mask, w, h, lm, matrix) {
     const a = buildAsset(imgData, mask, w, h, lm, matrix);
     // measured wearer? then the frame is sized and placed against that head instead of
     // against whatever face happened to be in the reference photo
@@ -132,8 +133,30 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
     }
     a.id = 'a' + Date.now();
     a.source = srcRef.current;
+    return a;
+  }
+
+  function commit(a) {
     setAsset(a);
     setStage('idle');
+  }
+
+  /**
+   * The SAM path: the local helper if it is up, otherwise the browser model.
+   * `hint` overrides the prompt points — used when the background key already found
+   * roughly where the frame is but could not make an asset out of it.
+   */
+  async function startSam(lm, hint) {
+    srcRef.current = 'sam';
+    setStage('sam');
+    const { loadSam, embed, pickGlassesPoints, helperStatus } = await sam();
+    const h = await helperStatus();
+    setHelper(h);
+    if (!h) await loadSam(p => setPct(p));      // the browser model is only needed without it
+    setBackend((await sam()).backend);
+    setStage('encode');
+    ctxRef.current = await embed(file);
+    setPoints(hint || pickGlassesPoints(lm, imgRef.current.naturalWidth, imgRef.current.naturalHeight));
   }
 
   const startedRef = useRef(false);
@@ -154,27 +177,26 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
       const H = Math.round(img.naturalHeight * (W / img.naturalWidth));
       const workData = imgDataAt(W, H);
       const fg = foregroundFromBackground(workData, W, H);
+      let hint = null;
 
       if (!lm && fg.plainBg) {
         srcRef.current = 'bg';
         setBackend('background key');
         setStage('trace');
         maskRef.current = { mask: fg.mask, width: W, height: H };
-        runBuild(workData, fg.mask, W, H, null, null);
-        return;
+        const keyed = makeAsset(workData, fg.mask, W, H, null, null);
+        if (keyed.ok) { commit(keyed); return; }
+        // A pale frame on a white ground keys out WITH the background: half the frame goes
+        // with it and there are no lens openings left in what remains. SAM still finds it,
+        // and click-to-correct only exists on that path — so fall through rather than
+        // handing over a shell of an outline with no way to fix it.
+        console.warn('[tryon] background key did not make a frame — falling back to SAM');
+        hint = pointsFromMask(fg.mask, W, H, img.naturalWidth / W);
       }
 
-      // otherwise: SAM. face landmarks guide the prompts; without a face we prompt a band.
-      srcRef.current = 'sam';
-      setStage('sam');
-      const { loadSam, embed, pickGlassesPoints, helperStatus } = await sam();
-      const h = await helperStatus();
-      setHelper(h);
-      if (!h) await loadSam(p => setPct(p));      // the browser model is only needed without it
-      setBackend((await sam()).backend);
-      setStage('encode');
-      ctxRef.current = await embed(file);
-      setPoints(pickGlassesPoints(lm, img.naturalWidth, img.naturalHeight));
+      // SAM. face landmarks guide the prompts; without a face we prompt a band, unless the
+      // background key left us something better to point at.
+      await startSam(lm, hint);
     } catch (e) {
       setError(String(e.message || e));
       setStage('error');
@@ -191,7 +213,8 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
         const seg = await segment(ctxRef.current, points);
         if (stale) return;
         maskRef.current = seg;
-        runBuild(imgDataAt(seg.width, seg.height), seg.mask, seg.width, seg.height, lmRef.current || null, poseRef.current);
+        commit(makeAsset(imgDataAt(seg.width, seg.height), seg.mask, seg.width, seg.height,
+                         lmRef.current || null, poseRef.current));
       } catch (e) { setError(String(e.message || e)); setStage('error'); }
     })();
     return () => { stale = true; };
