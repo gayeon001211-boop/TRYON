@@ -30,28 +30,58 @@ export class Glasses3DLayer {
     const rimL = new THREE.DirectionalLight(0xd8e2f0, 0.22); rimL.position.set(-1, 0.5, -1);
     this.scene.add(key, rimL);
 
-    this.pivot = new THREE.Group();
-    this.scene.add(this.pivot);
+    // one slot per face in shot — a pivot with its own copy of the frame, and its own
+    // depth-only head so each pair is hidden by its own wearer
+    this.slots = [];
     this.glasses = null;
     this._asset = null;
     this._opts = {};
 
-    this.occluder = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ colorWrite: false }));
-    this.occluder.renderOrder = -1;
-    this.occ = new Float32Array(469 * 3);
-    this.occluder.geometry.setAttribute('position', new THREE.BufferAttribute(this.occ, 3));
-    this.occluder.geometry.setIndex(ovalFanIndex(468));
-    this.scene.add(this.occluder);
-
     this.w = this.h = 1;
   }
 
+  _makeSlot() {
+    const pivot = new THREE.Group();
+    this.scene.add(pivot);
+    const occluder = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ colorWrite: false }));
+    occluder.renderOrder = -1;
+    const occ = new Float32Array(469 * 3);
+    occluder.geometry.setAttribute('position', new THREE.BufferAttribute(occ, 3));
+    occluder.geometry.setIndex(ovalFanIndex(468));
+    this.scene.add(occluder);
+    const slot = { pivot, occluder, occ, glasses: null };
+    this.slots.push(slot);
+    return slot;
+  }
+
   setGlasses({ asset, opts }) {
-    if (this.glasses) { this.pivot.remove(this.glasses); disposeTree(this.glasses); }
+    for (const s of this.slots) {
+      if (s.glasses) { s.pivot.remove(s.glasses); disposeTree(s.glasses); s.glasses = null; }
+    }
     this._asset = asset;
     this._opts = { ...opts };
-    this.glasses = buildGlassesFromAsset(asset, opts);
-    this.pivot.add(this.glasses);
+    this.glasses = buildGlassesFromAsset(asset, opts);      // the original, shared materials
+    const slot = this.slots[0] || this._makeSlot();
+    slot.glasses = this.glasses;
+    slot.pivot.add(this.glasses);
+  }
+
+  /** Everyone in shot wears it. Slots are grown once and reused. */
+  updateAll(faces, fit, opts, worn) {
+    if (!this.glasses) return;
+    faces.forEach((f, i) => {
+      const slot = this.slots[i] || this._makeSlot();
+      if (!slot.glasses) {                       // clones share materials, so colour follows
+        slot.glasses = this.glasses.clone(true);
+        slot.pivot.add(slot.glasses);
+      }
+      this._updateSlot(slot, f.pose, f.euler, fit, worn, f.lm);
+    });
+    for (let i = faces.length; i < this.slots.length; i++) {
+      const s = this.slots[i];
+      if (s.glasses) s.glasses.visible = false;
+      s.occluder.visible = false;
+    }
   }
 
   setColors(opts) {
@@ -82,45 +112,51 @@ export class Glasses3DLayer {
   /** pose px · euler rad · fit {w,h,x,y,scale,r} · opts · worn 0..1 · landmarks (mirrored) */
   update(pose, euler, fit, opts, worn, landmarks) {
     if (!this.glasses) return;
+    this._updateSlot(this.slots[0], pose, euler, fit, worn, landmarks);
+  }
+
+  _updateSlot(slot, pose, euler, fit, worn, landmarks) {
+    const glasses = slot?.glasses;
+    if (!glasses) return;
 
     const upp = this._unitPerPx();
     const spanRatio = this._asset?.placement?.spanRatio ?? 1.55;
     const targetW = pose.eyeSpan * spanRatio * (fit.w ?? 1) * (fit.scale ?? 1) * upp;
     const base = targetW / 1.0;                       // model built ~1 unit wide
-    this.glasses.scale.set(base, base * (fit.h ?? 1), base);
+    glasses.scale.set(base, base * (fit.h ?? 1), base);
 
     const wx = (pose.cx - this.w / 2) * upp + pose.eyeSpan * (fit.x ?? 0) * upp;
     const wy = -(pose.cy - this.h / 2) * upp;
     const yRatio = 0.02 + (fit.y ?? 0);              // procedural asset centres on the eye line
     const forward = pose.eyeSpan * upp * 0.16;
-    this.pivot.position.set(wx, wy - yRatio * pose.eyeSpan * upp, forward);
+    slot.pivot.position.set(wx, wy - yRatio * pose.eyeSpan * upp, forward);
 
     const ease = worn;
-    this.pivot.rotation.set(
+    slot.pivot.rotation.set(
       (euler.pitch || 0) * ease,
       (euler.yaw || 0) * ease,
       -((pose.angle ?? 0) + (fit.r ?? 0) * Math.PI / 180) * ease,
     );
-    this.glasses.visible = ease > 0.02;
-    this.glasses.scale.multiplyScalar(0.6 + 0.4 * ease);
-    this.glasses.position.z = (1 - ease) * 0.6;
+    glasses.visible = ease > 0.02;
+    glasses.scale.multiplyScalar(0.6 + 0.4 * ease);
+    glasses.position.z = (1 - ease) * 0.6;
 
     if (landmarks && landmarks.length >= 468) {
       const depth = pose.eyeSpan * upp * 2.2;
       const toW = q => [(q.x * this.w - this.w / 2) * upp, -(q.y * this.h - this.h / 2) * upp, -q.z * depth];
       for (let i = 0; i < 468; i++) {
         const [x, y, z] = toW(landmarks[i]);
-        this.occ[i * 3] = x; this.occ[i * 3 + 1] = y; this.occ[i * 3 + 2] = z;
+        slot.occ[i * 3] = x; slot.occ[i * 3 + 1] = y; slot.occ[i * 3 + 2] = z;
       }
       let cx = 0, cy = 0, cz = 0;
       for (const k of FACE_OVAL) { const [x, y, z] = toW(landmarks[k]); cx += x; cy += y; cz += z; }
       const n = FACE_OVAL.length;
-      this.occ[468 * 3] = cx / n; this.occ[468 * 3 + 1] = cy / n; this.occ[468 * 3 + 2] = cz / n - 0.1;
-      this.occluder.geometry.attributes.position.needsUpdate = true;
-      this.occluder.geometry.computeVertexNormals();
-      this.occluder.visible = true;
+      slot.occ[468 * 3] = cx / n; slot.occ[468 * 3 + 1] = cy / n; slot.occ[468 * 3 + 2] = cz / n - 0.1;
+      slot.occluder.geometry.attributes.position.needsUpdate = true;
+      slot.occluder.geometry.computeVertexNormals();
+      slot.occluder.visible = true;
     } else {
-      this.occluder.visible = false;
+      slot.occluder.visible = false;
     }
   }
 
@@ -163,8 +199,11 @@ export class Glasses3DLayer {
   }
 
   dispose() {
-    if (this.glasses) disposeTree(this.glasses);
-    this.occluder.geometry.dispose();
+    for (const s of this.slots) {
+      if (s.glasses) disposeTree(s.glasses);
+      s.occluder.geometry.dispose();
+    }
+    this.slots.length = 0;
     this.renderer.dispose();
   }
 }

@@ -49,7 +49,7 @@ export default function App() {
       ? compareFrames.map(f => ({ frame: f, opts: renderOpts(f) })) : null,
   };
 
-  const { videoRef, canvasRef, glCanvasRef, status, faceFound, facing, start, flip, snapshot, contactSheet, sample } = useTryOn(paramsRef);
+  const { videoRef, canvasRef, glCanvasRef, status, faceFound, faceCount, facing, start, flip, snapshot, contactSheet, sample } = useTryOn(paramsRef);
 
   useEffect(() => {
     const saved = load();
@@ -145,7 +145,7 @@ export default function App() {
           <button className={mode === '3d' ? 'on' : ''} onClick={() => setMode('3d')}>3D</button>
         </div>
         <span className="hint">
-          {status === 'on' ? <><span className="dot">●</span> camera on</>
+          {status === 'on' ? <><span className="dot">●</span> camera on{faceCount > 1 && ` · ${faceCount} people`}</>
             : status === 'denied' ? '● camera blocked' : `● camera ${status}`}
         </span>
       </header>

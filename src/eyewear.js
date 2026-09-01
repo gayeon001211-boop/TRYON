@@ -119,11 +119,11 @@ export function rimProfileOf(lensPoly, outline, sign, n = 128, fallback = 0.09) 
  * Measurements → a buildable frame. Everything is symmetric by construction and in
  * the asset's normalised space (frame ≈ 1 wide, y up, origin between the eyes).
  */
-export function eyewearSpec(asset, n = 128) {
+export function eyewearSpec(asset, n = 128, harmonics = 7) {
   // buildAsset already fitted one against the photo — use it, do not re-measure
   if (asset.spec) return asset.spec;
   const g = asset.geometry;
-  const { r, cL, cR } = canonicalLens(g.lensL, g.lensR, n);
+  const { r, cL, cR } = canonicalLens(g.lensL, g.lensR, n, harmonics);
   let lensW = 0, lensH = 0;
   for (let i = 0; i < n; i++) {
     const a = TAU * i / n;

@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { eyewearSpec, polyFromProfile } from './eyewear.js';
+import { materialParams } from './material.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -34,13 +35,22 @@ function pathFromPoly(poly) {
   return p;
 }
 
+/**
+ * A lens, not a flat disc: real lenses carry a base curve, so the surface bows forward
+ * at the centre and flattens to the rim. The bulge is relative to the lens itself —
+ * the old fixed divisor folded the surface in on small lenses.
+ */
 function lensSurface(poly, mat, z, bulge = 0.02) {
-  const geo = new THREE.ShapeGeometry(shapeFromPoly(poly), 16);
+  const geo = new THREE.ShapeGeometry(shapeFromPoly(poly), 24);
   const [cx, cy] = centroid(poly);
   const pos = geo.attributes.position;
+  let rMax = 1e-6;
   for (let i = 0; i < pos.count; i++) {
-    const dx = pos.getX(i) - cx, dy = pos.getY(i) - cy;
-    pos.setZ(i, z + bulge * Math.max(0, 1 - (dx * dx + dy * dy) / 0.05));
+    rMax = Math.max(rMax, Math.hypot(pos.getX(i) - cx, pos.getY(i) - cy));
+  }
+  for (let i = 0; i < pos.count; i++) {
+    const r = Math.hypot(pos.getX(i) - cx, pos.getY(i) - cy) / rMax;
+    pos.setZ(i, z + bulge * (1 - r * r));          // spherical cap, flat at the rim
   }
   geo.computeVertexNormals();
   const m = new THREE.Mesh(geo, mat); m.name = 'lens'; return m;
@@ -90,6 +100,30 @@ function templeMesh(hinge, sign, mat, dim, thickness) {
 }
 
 
+/** An arc of the lens rim as a tube, from angle a0 to a1 (radians, 0 = outward). */
+function arcTube(spec, a0, a1, radius, mat, name) {
+  const pts = [];
+  const steps = Math.max(12, Math.round((spec.n * (a1 - a0)) / (Math.PI * 2)));
+  for (let i = 0; i <= steps; i++) {
+    const a = a0 + ((a1 - a0) * i) / steps;
+    const bin = Math.min(spec.n - 1, Math.round((((a % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2) * spec.n) % spec.n);
+    const r = spec.lensR[bin] + (spec.rimProfile ? spec.rimProfile[bin] : spec.rimW) * 0.5;
+    pts.push(new THREE.Vector3(Math.cos(a) * r, spec.centreY + Math.sin(a) * r, 0));
+  }
+  const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), pts.length * 2, radius, 8, false);
+  const m = new THREE.Mesh(geo, mat); m.name = name; return m;
+}
+
+/** A wire rim: a metal frame is a bent rod, not a slab with a hole in it. */
+function wireRim(spec, mat) {
+  const pts = polyFromProfile(spec.lensR, 0, spec.centreY, spec.rimW * 0.5)
+    .map(([x, y]) => new THREE.Vector3(x, y, 0));
+  const curve = new THREE.CatmullRomCurve3(pts, true);
+  const r = clamp(spec.rimW * 0.34, 0.004, 0.014);      // ~1 mm of wire on a 140 mm front
+  const geo = new THREE.TubeGeometry(curve, Math.max(64, spec.n), r, 8, true);
+  const m = new THREE.Mesh(geo, mat); m.name = 'rim'; return m;
+}
+
 /** A rim: the lens opening cut out of an outward offset of itself, extruded and rounded. */
 function rimMesh(spec, cx, mat) {
   const inner = polyFromProfile(spec.lensR, 0, 0);
@@ -111,6 +145,20 @@ function rimMesh(spec, cx, mat) {
     depth: d, bevelEnabled: true, bevelThickness: d * 0.2, bevelSize: spec.rimW * 0.14,
     bevelSegments: 3, curveSegments: 6,
   });
+  // (angle, band) UVs so the unwrapped rim strip lands on the rebuilt ring, whatever
+  // regularising did to the outline
+  const pos = geo.attributes.position, uv = geo.attributes.uv;
+  if (uv) {
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i);
+      const a = (Math.atan2(y, x) + Math.PI * 2) % (Math.PI * 2);
+      const bin = Math.min(spec.n - 1, Math.round((a / (Math.PI * 2)) * spec.n) % spec.n);
+      const r = Math.hypot(x, y), r0 = spec.lensR[bin];
+      const band = (spec.rimProfile ? spec.rimProfile[bin] : spec.rimW) || 1e-6;
+      uv.setXY(i, a / (Math.PI * 2), clamp((r - r0) / band, 0, 1));
+    }
+    uv.needsUpdate = true;
+  }
   geo.translate(cx, spec.centreY, -d / 2);
   geo.computeVertexNormals();
   const m = new THREE.Mesh(geo, mat); m.name = 'rim'; return m;
@@ -153,7 +201,9 @@ function endPieceMesh(spec, sign, mat) {
  */
 function buildWearable(asset, opts, mats) {
   const { frameMat, lensMat } = mats;
-  const spec = eyewearSpec(asset);
+  const spec0 = eyewearSpec(asset);
+  const mp0 = materialParams(spec0.material || 'acetate');
+  const spec = mp0.depthScale === 1 ? spec0 : { ...spec0, depth: spec0.depth * mp0.depthScale };
   const group = new THREE.Group();
   group.name = 'glasses';
 
@@ -161,14 +211,25 @@ function buildWearable(asset, opts, mats) {
   // edge tucks under the rim, otherwise the rim's inner wall shows through the tint
   const lensPoly = polyFromProfile(spec.lensR, 0, 0, spec.rimW * 0.3);
 
+  const build = spec.construction || 'fullrim';
   for (const sign of [-1, 1]) {
     // One group per eye, wrapped back towards the face. The end piece and the arm live
     // INSIDE it — parented to the frame instead they stayed flat while the rim turned,
     // and tore away from it into floating chunks.
     const eye = new THREE.Group();
-    eye.add(rimMesh(spec, 0, frameMat));
+    // rimless drills the lens straight to the bridge; a browline carries material only
+    // across the top. Building every frame as a full rim erased both.
+    if (build === 'wire') {
+      eye.add(wireRim(spec, frameMat));
+    } else if (build === 'browline') {
+      // heavy brow over the lens, fine wire under it — the style itself, not a full rim
+      eye.add(arcTube(spec, 0.12, Math.PI - 0.12, spec.rimW * 0.55, frameMat, 'rim'));
+      eye.add(arcTube(spec, Math.PI + 0.05, Math.PI * 2 - 0.05, spec.rimW * 0.16, frameMat, 'rim'));
+    } else if (build !== 'rimless') {
+      eye.add(rimMesh(spec, 0, frameMat));
+    }
 
-    const lens = lensSurface(lensPoly, lensMat, 0, 0);
+    const lens = lensSurface(lensPoly, lensMat, 0, spec.lensW * 0.07);   // base curve
     lens.position.set(0, spec.centreY, 0);
     eye.add(lens);
 
@@ -189,6 +250,38 @@ function buildWearable(asset, opts, mats) {
 
   if (spec.bridge.needed) group.add(bridgeMesh(spec, frameMat));
   return group;
+}
+
+/**
+ * A normal map from the strip's own shading. A front photo carries no depth, but the
+ * light and shade painted on the frame do describe its surface.
+ * ponytail: shading-as-height is an illusion, not a measurement.
+ */
+function reliefFrom(image, strength = 2) {
+  const w = image.width, h = image.height;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(image, 0, 0);
+  const src = ctx.getImageData(0, 0, w, h).data;
+  const lum = new Float32Array(w * h);
+  for (let i = 0, p = 0; i < src.length; i += 4, p++) {
+    lum[p] = src[i + 3] < 8 ? 0.5 : (src[i] * 0.299 + src[i + 1] * 0.587 + src[i + 2] * 0.114) / 255;
+  }
+  const at = (x, y) => lum[Math.min(h - 1, Math.max(0, y)) * w + ((x + w) % w)];   // u wraps
+  const out = ctx.createImageData(w, h), o = out.data;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const gx = at(x + 1, y) - at(x - 1, y), gy = at(x, y + 1) - at(x, y - 1);
+    const nx = -gx * strength, ny = -gy * strength, len = Math.hypot(nx, ny, 1), i = (y * w + x) * 4;
+    o[i] = (nx / len * 0.5 + 0.5) * 255;
+    o[i + 1] = (ny / len * 0.5 + 0.5) * 255;
+    o[i + 2] = (1 / len * 0.5 + 0.5) * 255;
+    o[i + 3] = 255;
+  }
+  ctx.putImageData(out, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = THREE.RepeatWrapping;
+  t.needsUpdate = true;
+  return t;
 }
 
 /**
@@ -214,12 +307,34 @@ export function buildGlassesFromAsset(asset, opts = {}) {
   const lensOpacity = clamp(opts.lensOpacity ?? asset.lensOpacity ?? 0.12, 0.02, 0.7);
   const frameOpacity = clamp(opts.frameOpacity ?? 1, 0.2, 1);
 
+  // shade it as what it is: polished metal, clear acetate, tortoiseshell or solid acetate.
+  // One material for everything is why a wire frame used to look like moulded plastic.
+  const mp = materialParams(asset.spec?.material || asset.material?.kind || 'acetate');
   const frameMat = new THREE.MeshPhysicalMaterial({
-    // acetate: soft body, glossy surface. Metalness made every frame look like grey plastic.
-    color: new THREE.Color(frameColor), roughness: 0.28, metalness: 0,
-    clearcoat: 1, clearcoatRoughness: 0.09, envMapIntensity: 1.1, sheen: 0.15,
+    color: new THREE.Color(frameColor),
+    roughness: mp.roughness, metalness: mp.metalness,
+    clearcoat: mp.clearcoat, clearcoatRoughness: mp.clearcoatRoughness,
+    transmission: mp.transmission ?? 0, ior: mp.ior ?? 1.5,
+    thickness: mp.thickness ?? 0,
+    envMapIntensity: mp.metalness > 0.5 ? 1.6 : 1.1, sheen: mp.metalness > 0.5 ? 0 : 0.15,
     transparent: frameOpacity < 1, opacity: frameOpacity,
   });
+
+  // the frame's own pixels, if we unwrapped them. Patterned frames need it (tortoiseshell
+  // is not one colour); a plain moulded colour only gains noise, so it stays opt-in.
+  const wantTex = opts.texture ?? (asset.material?.kind === 'patterned');
+  if (wantTex && asset.rimTexture) {
+    new THREE.TextureLoader().load(asset.rimTexture, tex => {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.anisotropy = 8;
+      frameMat.map = tex;
+      try { frameMat.normalMap = reliefFrom(tex.image, 2); frameMat.normalScale = new THREE.Vector2(0.7, 0.7); }
+      catch { /* relief is a nicety */ }
+      frameMat.needsUpdate = true;
+      opts.onReady?.();
+    });
+  }
   // real lens glass: transmissive with a tint, so it refracts and catches highlights
   const lensMat = new THREE.MeshPhysicalMaterial({
     color: lensSpec.color, transparent: true, opacity: clamp(lensOpacity + 0.35, 0.3, 0.95),

@@ -3,6 +3,8 @@ import { FilesetResolver, FaceLandmarker } from '@mediapipe/tasks-vision';
 import { poseFromEyes, eulerFromLandmarks } from './frame.js';
 import { drawAssetAtPose } from './assetRender.js';
 
+const MAX_FACES = 4;    // everyone in front of the camera gets a pair
+
 const load3d = () => import('./glasses3d.js');
 
 const WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
@@ -19,8 +21,9 @@ export function useTryOn(paramsRef) {
   const glCanvasRef = useRef(null);
   const [status, setStatus] = useState('off');
   const [faceFound, setFaceFound] = useState(false);
+  const [faceCount, setFaceCount] = useState(0);
   const [facing, setFacing] = useState('user');
-  const run = useRef({ pose: null, wear: 0, raf: 0, landmarker: null, layer: null, lm: null, euler: { yaw: 0, pitch: 0 } });
+  const run = useRef({ pose: null, wear: 0, raf: 0, landmarker: null, layer: null, lm: null, faces: [], euler: { yaw: 0, pitch: 0 } });
 
   useEffect(() => () => stopAll(run.current, videoRef.current), []);
 
@@ -47,7 +50,7 @@ export function useTryOn(paramsRef) {
         const files = await FilesetResolver.forVisionTasks(WASM);
         run.current.landmarker = await FaceLandmarker.createFromOptions(files, {
           baseOptions: { modelAssetPath: MODEL, delegate: 'GPU' },
-          runningMode: 'VIDEO', numFaces: 1, outputFacialTransformationMatrixes: true,
+          runningMode: 'VIDEO', numFaces: MAX_FACES, outputFacialTransformationMatrixes: true,
         });
       }
       if (!run.current.layer) {
@@ -100,18 +103,26 @@ export function useTryOn(paramsRef) {
     ctx.restore();
 
     const res = r.landmarker.detectForVideo(video, t);
-    const lm = res?.faceLandmarks?.[0];
-    if (lm) {
-      const m = lm.map(q => mirrorPt(q, mir));
-      r.lm = m;
-      r.pose = poseFromEyes(m[33], m[263], c.width, c.height);
-      r.pose.yaw = (m[1].x * c.width - r.pose.cx) / r.pose.eyeSpan;
-      r.matrix = res?.facialTransformationMatrixes?.[0]?.data ?? null;   // kept for measuring
-      const e = eulerFromLandmarks(m);
-      r.euler.yaw += (e.yaw - r.euler.yaw) * 0.4;
-      r.euler.pitch += (e.pitch - r.euler.pitch) * 0.4;
+    const faces = (res?.faceLandmarks || []).map((f, i) => {
+      const m = f.map(q => mirrorPt(q, mir));
+      const pose = poseFromEyes(m[33], m[263], c.width, c.height);
+      pose.yaw = (m[1].x * c.width - pose.cx) / pose.eyeSpan;
+      return { lm: m, pose, euler: eulerFromLandmarks(m),
+               matrix: res?.facialTransformationMatrixes?.[i]?.data ?? null };
+    // nearest first: the biggest face is the one being measured and the one that leads
+    }).sort((a, b) => b.pose.eyeSpan - a.pose.eyeSpan);
+    r.faces = faces;
+
+    const lead = faces[0];
+    if (lead) {
+      r.lm = lead.lm;
+      r.pose = lead.pose;
+      r.matrix = lead.matrix;
+      r.euler.yaw += (lead.euler.yaw - r.euler.yaw) * 0.4;
+      r.euler.pitch += (lead.euler.pitch - r.euler.pitch) * 0.4;
     }
-    setFaceFound(Boolean(lm));
+    setFaceFound(faces.length > 0);
+    setFaceCount(faces.length);
 
     syncGlasses();
     const wt = p.worn ? 1 : 0;
@@ -125,20 +136,24 @@ export function useTryOn(paramsRef) {
       layer?.clear();
       drawSplit(ctx, c, r.pose, p, r.wear);
     } else if (use3d) {
-      layer.update(r.pose || dummyPose(c), r.euler, p.fit, p.opts, r.wear, r.lm);
+      // everyone in shot, not just the nearest face
+      if (r.faces.length) layer.updateAll(r.faces, p.fit, p.opts, r.wear);
+      else layer.update(dummyPose(c), r.euler, p.fit, p.opts, r.wear, null);
       layer.render();
     } else {
       layer?.clear();
-      if (r.pose && r.wear > 0.01) {
+      if (r.wear > 0.01) {
         const k = r.wear;
-        // ease only the drop-in (y + scale + fade), never the horizontal anchor
-        const pose = {
-          cx: r.pose.cx,
-          cy: r.pose.cy - (1 - k) * r.pose.eyeSpan * 0.6,
-          angle: r.pose.angle * k,
-          eyeSpan: r.pose.eyeSpan, yaw: r.pose.yaw,
-        };
-        drawAssetAtPose(ctx, p.frame.asset, pose, { ...p.fit, scale: (p.fit.scale ?? 1) * (0.85 + 0.15 * k) }, p.opts, k);
+        for (const f of r.faces) {           // one pair per face, not just the nearest
+          // ease only the drop-in (y + scale + fade), never the horizontal anchor
+          const pose = {
+            cx: f.pose.cx,
+            cy: f.pose.cy - (1 - k) * f.pose.eyeSpan * 0.6,
+            angle: f.pose.angle * k,
+            eyeSpan: f.pose.eyeSpan, yaw: f.pose.yaw,
+          };
+          drawAssetAtPose(ctx, p.frame.asset, pose, { ...p.fit, scale: (p.fit.scale ?? 1) * (0.85 + 0.15 * k) }, p.opts, k);
+        }
       }
     }
   }
@@ -173,7 +188,7 @@ export function useTryOn(paramsRef) {
   const sample = () => ({ lm: run.current.lm, pose: run.current.pose, matrix: run.current.matrix,
                           size: { w: canvasRef.current?.width || 0, h: canvasRef.current?.height || 0 } });
 
-  return { videoRef, canvasRef, glCanvasRef, status, faceFound, facing, start, flip, snapshot, contactSheet, sample };
+  return { videoRef, canvasRef, glCanvasRef, status, faceFound, faceCount, facing, start, flip, snapshot, contactSheet, sample };
 }
 
 function dummyPose(c) { return { cx: c.width / 2, cy: c.height / 2, eyeSpan: c.width * 0.12, angle: 0, yaw: 0 }; }

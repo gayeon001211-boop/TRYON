@@ -11,6 +11,7 @@
 
 import { decomposeMatrix, eulerFromLandmarks } from './frame.js';
 import { eyewearSpec, rimProfileOf } from './eyewear.js';
+import { classifyMaterial, classifyShape } from './material.js';
 import { rasterSpec, iou, fitSpec, applyFit, shrink, IDENTITY } from './fit.js';
 import {
   largestComponent, connectComponents, fillHoles, morphClose, morphOpen, detectHoles,
@@ -52,6 +53,40 @@ function ellipsePoly(cx, cy, rx, ry, n = 28) {
   const p = [];
   for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; p.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); }
   return p;
+}
+
+/**
+ * Unwrap the rim into a strip: u = angle round the lens, v = inner edge to outer edge.
+ *
+ * A flat photo pasted on the front only lines up if the geometry still has the traced
+ * shape — and it does not, because the model is rebuilt symmetric. Sampling in
+ * (angle, band) coordinates instead means the strip lands correctly on the rebuilt ring
+ * however much the outline was regularised, and both eyes can share one texture.
+ * Browser only (needs a canvas); returns a PNG data URL.
+ */
+function unwrapRim(img, w, h, lensCentre, lensR, rimProfile, n, bandPx = 48) {
+  if (typeof document === 'undefined') return null;
+  const c = document.createElement('canvas');
+  c.width = n; c.height = bandPx;
+  const ctx = c.getContext('2d');
+  const out = ctx.createImageData(n, bandPx);
+  for (let i = 0; i < n; i++) {
+    const a = (Math.PI * 2 * i) / n, ca = Math.cos(a), sa = Math.sin(a);
+    const r0 = lensR[i], r1 = r0 + rimProfile[i];
+    for (let j = 0; j < bandPx; j++) {
+      const t = (j + 0.5) / bandPx;                    // 0 = lens edge, 1 = outer edge
+      const r = r0 + (r1 - r0) * t;
+      const sx = Math.round(lensCentre.x + ca * r);
+      const sy = Math.round(lensCentre.y - sa * r);    // profile is y-up, pixels are y-down
+      const d = (j * n + i) * 4;
+      if (sx < 0 || sy < 0 || sx >= w || sy >= h) { out.data[d + 3] = 0; continue; }
+      const s = (sy * w + sx) * 4;
+      out.data[d] = img.data[s]; out.data[d + 1] = img.data[s + 1];
+      out.data[d + 2] = img.data[s + 2]; out.data[d + 3] = 255;
+    }
+  }
+  ctx.putImageData(out, 0, 0);
+  return c.toDataURL('image/png');
 }
 
 /**
@@ -348,27 +383,47 @@ export function buildAsset(img, mask, w, h, landmarks, faceMatrix) {
 
   // 8. fit: draw what we just built, compare it with what we saw, and refine.
   //    Without this the pipeline is one-way and a wrong measurement goes unnoticed.
-  let spec = null, matchIoU = null;
+  let spec = null, matchIoU = null, material = null, construction = null, rimTexture = null;
   try {
     // per-angle rim: measured off the trace, so a frame that is thick on top stays so
     const rp = rimProfileOf(lensL, outline, -1, 128, dimensions.rimRatio);
-    const base = { ...eyewearSpec({ geometry: { lensL, lensR }, dimensions }),
-                   rimProfile: rp.profile };
     const small = shrink(joined, w, h, 256);
-    const tf = {
-      cx: (centre.x - 0) * small.scale, cy: centre.y * small.scale, scale: scale * small.scale,
-    };
-    const before = iou(rasterSpec(base, IDENTITY, tf, small.width, small.height), small.mask);
-    const fitted = fitSpec(base, small.mask, small.width, small.height, tf, { rounds: 8 });
-    spec = applyFit(base, fitted.params);
-    matchIoU = fitted.iou;
-    stages.fitBefore = +before.toFixed(4);
+    const tf = { cx: centre.x * small.scale, cy: centre.y * small.scale, scale: scale * small.scale };
+
+    // How faithful should the outline be? A distinctive frame deserves its curves; a
+    // ragged mask deserves smoothing. Rather than pick by rule, build it both ways and
+    // keep whichever actually matches the photo — the fit already tells us which does.
+    let best = null;
+    for (const harmonics of [12, 5]) {
+      const cand = { ...eyewearSpec({ geometry: { lensL, lensR } , dimensions }, 128, harmonics),
+                     rimProfile: rp.profile, harmonics };
+      const before = iou(rasterSpec(cand, IDENTITY, tf, small.width, small.height), small.mask);
+      const fitted = fitSpec(cand, small.mask, small.width, small.height, tf, { rounds: 8 });
+      if (!best || fitted.iou > best.fitted.iou) best = { cand, fitted, before };
+    }
+    spec = applyFit(best.cand, best.fitted.params);
+    spec.harmonics = best.cand.harmonics;
+    // what it is made of, and how it is built — read from the frame band and the rim
+    material = classifyMaterial(img, shell, w, h);
+    // the frame's real pixels, unwrapped so they fit the rebuilt ring
+    const lensCentrePx = { x: lb.cx, y: lb.cy };
+    const tracedR = new Float64Array(spec.n), tracedRim = new Float64Array(spec.n);
+    for (let i = 0; i < spec.n; i++) {
+      tracedR[i] = spec.lensR[i] * scale;               // model units -> source pixels
+      tracedRim[i] = spec.rimProfile[i] * scale;
+    }
+    rimTexture = unwrapRim(img, w, h, lensCentrePx, tracedR, tracedRim, spec.n);
+    construction = classifyShape(spec.rimProfile, spec.lensW);
+    spec.material = material.kind;
+    spec.construction = construction.kind;
+    matchIoU = best.fitted.iou;
+    stages.fitBefore = +best.before.toFixed(4);
   } catch { /* a fit failure must not lose the frame we already measured */ }
 
   return {
     // geometry is always the real trace; `ok` just says "confident enough not to nag"
     ok: hasHoles && shapeLooksRight,
-    spec,
+    spec, material, construction, rimTexture,
     lowConfidence: !(hasHoles && shapeLooksRight),
     geometry: { outline, lensL, lensR, bridge, hingeL, hingeR },
     dimensions, frameColor, lensColor, lensOpacity,
