@@ -1,6 +1,43 @@
 # TRYON — project state & handoff
 
-안경 실착 웹앱. 웹캠으로 안경을 써보고, **안경 사진을 업로드하면 그 프레임의 실제 형태·질감을
+**개인 도구다.** 배포해서 남에게 보여줄 일은 없고 본인만 쓴다(2026-09-01 확인). 그래서
+"브라우저에서만 돌린다 / 서버 없다 / 경량 모델" 같은 제약은 더 이상 유효하지 않다.
+Vercel 배포(https://chinook-rho.vercel.app)는 편의를 위해 유지하되, 품질은 로컬 우선.
+
+## 로컬 도우미 (2026-09-01 추가)
+
+```bash
+npm run helper      # 127.0.0.1:8791, 루프백 전용
+npm run dev         # http://localhost:5173
+```
+
+- `helper/server.py` — FastAPI. `GET /health`, `POST /warmup`, `POST /segment`
+- **SAM 2.1 hiera-large가 MPS(GPU)에서 동작 확인됨**: 최초 로드 174초(캐시 후 8초),
+  분리 5.2초, score 0.946. 브라우저 SlimSAM보다 마스크 경계가 확연히 낫다.
+- `src/segment.js`의 `helperStatus()`가 400ms 안에 감지 → 있으면 `/segment` 사용,
+  없으면 기존 SlimSAM 경로. **호출부(`segment(ctx, points)`) 시그니처는 동일**하다.
+- 주의: 포트 8787은 이 머신의 다른 서비스(aside-n8n-bridge)가 쓰고 있어 **8791**을 쓴다.
+- `transformers`의 `AutoModel`은 sam2의 **비디오 모델**을 고른다. 반드시 `Sam2Model`을
+  명시해야 한다(안 그러면 `missing inference_session` 500).
+
+## Blender 베이스 메시 — 파이프라인 완성, 메시는 미완
+
+```bash
+/Applications/Blender.app/Contents/MacOS/Blender --background \
+  --python helper/blender/build_frames.py     # → public/frames/*.glb
+```
+
+- 파이프라인은 **끝까지 검증됨**: 스크립트 → glb 4종 → 브라우저 GLTFLoader 로드 → `fitBaseFrame`.
+- **그러나 메시 자체가 아직 안경처럼 안 생겼다.** 좌표계(Blender Z-up vs glTF Y-up)와
+  베벨 오브젝트 적용 순서를 세 번 고쳤는데도 림이 거대한 세로 고리로 나온다.
+  → `blender_bases3.png`(scratchpad) 참고.
+- 그래서 **`baseLooksSane()`** 게이트를 넣었다: 바운딩 박스가 가로:세로 1.8~5 범위가
+  아니면 로드를 거부하고 절차적 생성으로 폴백. 게다가 base 사용은 `opts.base === true`
+  **옵트인**이라 지금은 앱에 영향이 없다.
+- **다음 세션의 첫 과제**: `helper/blender/build_frames.py`를 제대로 고치는 것.
+  추천 접근 — 오브젝트 회전/스케일에 기대지 말고 **버텍스 좌표를 직접 계산**하거나,
+  Blender GUI에서 한 번 제대로 만들어 .blend로 저장하고 스크립트는 내보내기만 담당.
+
 추출해** 2D/3D로 얼굴에 씌운다. React + Vite, 서버·계정 없음.
 
 이 파일은 세션·노트북·계정이 바뀌어도 이어서 작업할 수 있도록 현재 상태를 적어둔 것이다.

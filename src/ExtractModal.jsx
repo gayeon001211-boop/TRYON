@@ -27,6 +27,7 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
   const [secs, setSecs] = useState(0);
   const [points, setPoints] = useState(null);
   const [backend, setBackend] = useState('');
+  const [helper, setHelper] = useState(null);   // the local helper, if it is running
   const [asset, setAsset] = useState(null);
   const [showDebug, setShowDebug] = useState(false);
 
@@ -166,8 +167,10 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
       // otherwise: SAM. face landmarks guide the prompts; without a face we prompt a band.
       srcRef.current = 'sam';
       setStage('sam');
-      const { loadSam, embed, pickGlassesPoints } = await sam();
-      await loadSam(p => setPct(p));
+      const { loadSam, embed, pickGlassesPoints, helperStatus } = await sam();
+      const h = await helperStatus();
+      setHelper(h);
+      if (!h) await loadSam(p => setPct(p));      // the browser model is only needed without it
       setBackend((await sam()).backend);
       setStage('encode');
       ctxRef.current = await embed(file);
@@ -234,7 +237,9 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
     // one label per real step: "looking for a face" used to stay up through the whole
     // segmenter download, which made a slow load look like a hang — twice
     model: '01. looking for a face',
-    sam: `02. loading the segmenter — ${Math.round(pct * 100)}% · 40 MB, first upload only`,
+    sam: helper
+      ? `02. using the local helper — ${helper.model || 'SAM'} on ${helper.device}`
+      : `02. loading the segmenter — ${Math.round(pct * 100)}% · 40 MB, first upload only`,
     encode: `03. reading the photo — ${backend}`,
     trace: srcRef.current === 'bg' ? '04. keying out the background' : '04. tracing the frame outline',
     idle: asset
@@ -257,6 +262,12 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
              style={{ width: stage === 'model' ? `${pct * 100}%` : '100%' }} />
         </div>
 
+        {!helper && stage === 'idle' && (
+          <p className="hint">
+            running <code>npm run helper</code> on this machine swaps in a full-size
+            segmentation model — noticeably better on worn photos and busy backgrounds.
+          </p>
+        )}
         <div className="scroller">
         <div className="cropbox" onClick={addPoint}>
           <img ref={imgRef} src={url} alt="uploaded" onLoad={onLoad}
@@ -285,7 +296,8 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
               {(asset.quality.iou * 100 | 0)}%</b>
           </>}
           {asset.quality?.poseWarn && <>&nbsp;·&nbsp; head turned far, size may be off</>}
-          &nbsp;·&nbsp; {asset.source === 'bg' ? 'background key' : 'SAM'}
+          &nbsp;·&nbsp; {asset.source === 'bg' ? 'background key'
+            : helper ? <span className="ok">local {helper.device}</span> : 'browser SAM'}
         </p>}
 
         {asset && (

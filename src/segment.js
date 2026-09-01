@@ -1,6 +1,30 @@
 import { SamModel, AutoProcessor, RawImage, Tensor, env } from '@huggingface/transformers';
 
-const MODEL = 'Xenova/slimsam-77-uniform';   // ~40 MB Segment Anything, runs locally
+const MODEL = 'Xenova/slimsam-77-uniform';   // ~40 MB Segment Anything, runs in the browser
+const HELPER = 'http://127.0.0.1:8791';     // the local helper, when it is running
+
+/**
+ * Is the local helper up? It runs a full-size segmentation model on this machine, which
+ * is far more accurate than the browser-sized one — but it is optional, so this check is
+ * short and a failure just means "carry on in the browser".
+ */
+let helperProbe = null;
+export function helperStatus() {
+  if (!helperProbe) {
+    helperProbe = (async () => {
+      try {
+        const ctl = new AbortController();
+        const t = setTimeout(() => ctl.abort(), 400);
+        const res = await fetch(HELPER + '/health', { signal: ctl.signal });
+        clearTimeout(t);
+        if (!res.ok) return null;
+        const j = await res.json();
+        return { ...j, url: HELPER };
+      } catch { return null; }
+    })();
+  }
+  return helperProbe;
+}
 
 let loading;
 export let backend = '';   // what actually ran, for the UI to own up to
@@ -77,6 +101,11 @@ export { pickGlassesPoints as pickPoints };
  * only have to run the decoder (milliseconds).
  */
 export async function embed(image) {
+  const helper = await helperStatus();
+  if (helper && image instanceof Blob) {
+    // the helper needs the picture, not an encoding of it — skip the browser model entirely
+    return { helper, blob: image };
+  }
   const { model, processor } = await loadSam();
   // a Blob/File is the browser path; RawImage.read only understands urls and paths,
   // and throws "Unsupported input type" on an <img> element
@@ -84,11 +113,52 @@ export async function embed(image) {
     : image instanceof Blob ? await RawImage.fromBlob(image)
     : await RawImage.read(image);
   const inputs = await processor(raw);
-  return { inputs, embeddings: await model.get_image_embeddings(inputs), model, processor };
+  return { inputs, embeddings: await model.get_image_embeddings(inputs), model, processor, blob: image };
+}
+
+/**
+ * Same call, better model, when the helper is up: send the photo and the prompt points to
+ * the local process and get a full-size SAM mask back. `ctx` carries the source blob so
+ * this path needs nothing the browser path did not already have.
+ */
+async function segmentViaHelper(ctx, points) {
+  const dataUrl = await new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.onerror = rej;
+    fr.readAsDataURL(ctx.blob);
+  });
+  const r = await fetch(HELPER + '/segment', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ image: dataUrl, points: points.map(p => ({ p: p.p, label: p.label })) }),
+  });
+  if (!r.ok) throw new Error('helper ' + r.status);
+  const j = await r.json();
+
+  // the helper answers with a PNG; unpack it to the same Uint8Array the caller expects
+  const img = await new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = rej;
+    im.src = j.mask;
+  });
+  const c = document.createElement('canvas');
+  c.width = j.width; c.height = j.height;
+  const cx = c.getContext('2d', { willReadFrequently: true });
+  cx.drawImage(img, 0, 0);
+  const px = cx.getImageData(0, 0, j.width, j.height).data;
+  const mask = new Uint8Array(j.width * j.height);
+  for (let i = 0; i < mask.length; i++) mask[i] = px[i * 4] > 127 ? 1 : 0;
+  return { mask, width: j.width, height: j.height, score: j.score, via: j.model };
 }
 
 /** Decode one set of prompt points into {mask: Uint8Array(w*h), width, height}. */
 export async function segment(ctx, points) {
+  if (ctx?.helper) {
+    try { return await segmentViaHelper(ctx, points); }
+    catch (e) { console.warn('helper segmentation failed, using the browser model', e); }
+  }
   const { model, processor, inputs, embeddings } = ctx;
 
   const input_points = new Tensor('float32', points.flatMap(q => q.p), [1, 1, points.length, 2]);

@@ -5,7 +5,7 @@
 
 import * as THREE from 'three';
 import { FACE_OVAL, ovalFanIndex } from './faceMesh.js';
-import { buildGlassesFromAsset, studioEnvironment } from './glassesModel.js';
+import { buildGlassesFromAsset, studioEnvironment, loadBaseFrame, fitBaseFrame } from './glassesModel.js';
 
 export { eulerFromLandmarks } from './frame.js';
 
@@ -64,6 +64,28 @@ export class Glasses3DLayer {
     const slot = this.slots[0] || this._makeSlot();
     slot.glasses = this.glasses;
     slot.pivot.add(this.glasses);
+
+    // if a Blender base for this construction is available, swap it in when it arrives:
+    // same measurements, better modelled frame. Missing file = keep what we just built.
+    const kind = asset.spec?.construction || asset.construction?.kind;
+    if (kind && opts.base === true) {          // ponytail: opt-in until the meshes are good
+      loadBaseFrame(kind).then(scene => {
+        if (!scene || this._asset !== asset) return;
+        const spec = this.glasses?.userData?.spec;
+        const mat = this.glasses?.userData?.frameMat;
+        if (!spec || !mat) return;
+        const built = fitBaseFrame(scene, spec, mat);
+        built.userData = { ...this.glasses.userData, fromBase: true };
+        for (const s of this.slots) {
+          if (!s.glasses) continue;
+          s.pivot.remove(s.glasses);
+          s.glasses = built.clone(true);
+          s.pivot.add(s.glasses);
+        }
+        this.glasses = this.slots[0].glasses;
+        this.onBase?.('blender');
+      });
+    }
   }
 
   /** Everyone in shot wears it. Slots are grown once and reused. */

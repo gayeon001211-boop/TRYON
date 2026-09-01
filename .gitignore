@@ -3,3 +3,8 @@ dist
 
 .claude/
 .vercel
+
+# python / helper
+helper/.venv
+helper/uv.lock
+__pycache__/

@@ -8,6 +8,65 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { eyewearSpec, polyFromProfile } from './eyewear.js';
 import { materialParams } from './material.js';
 
+// Frames modelled in Blender (helper/blender/build_frames.py) and exported as glTF.
+// They carry what generated geometry cannot: hinges, nose pads, an arm that tapers.
+// Absent — as on the deployed site — the procedural build below takes over.
+const BASE_URL = kind => `/frames/${kind}.glb`;
+const baseCache = new Map();
+
+/**
+ * Does this look like a pair of glasses at all? A front is two to four times wider than
+ * it is tall and not deeper than it is wide. Geometry that fails this is a modelling
+ * mistake, and it must never reach the try-on — the procedural build is used instead.
+ */
+export function baseLooksSane(scene) {
+  if (!scene) return false;
+  const box = new THREE.Box3().setFromObject(scene);
+  const s = box.getSize(new THREE.Vector3());
+  if (!(s.x > 0 && s.y > 0)) return false;
+  const wide = s.x / s.y;
+  return wide > 1.8 && wide < 5 && s.z < s.x * 1.6;
+}
+
+export async function loadBaseFrame(kind) {
+  if (!baseCache.has(kind)) {
+    baseCache.set(kind, (async () => {
+      const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+      const scene = await new Promise(res => {
+        new GLTFLoader().load(BASE_URL(kind), gltf => res(gltf.scene), undefined, () => res(null));
+      });
+      if (scene && !baseLooksSane(scene)) {
+        console.warn(`[tryon] base frame "${kind}" does not measure like a frame — ignoring it`);
+        return null;
+      }
+      return scene;
+    })());
+  }
+  return baseCache.get(kind);
+}
+
+/**
+ * Fit a Blender base to the measurements taken off the photo: scale it to the frame's
+ * width and lens height, then hand it the sampled material. The shape's character comes
+ * from the model; its proportions come from the upload.
+ */
+export function fitBaseFrame(scene, spec, frameMat) {
+  const group = new THREE.Group();
+  group.name = 'glasses';
+  const model = scene.clone(true);
+  const box = new THREE.Box3().setFromObject(model);
+  const size = box.getSize(new THREE.Vector3());
+  const centre = box.getCenter(new THREE.Vector3());
+  const targetW = 2 * spec.halfGap + spec.lensW;
+  const s = size.x > 1e-6 ? targetW / size.x : 1;
+  model.traverse(o => { if (o.isMesh) o.material = frameMat; });
+  model.position.sub(centre.multiplyScalar(s));
+  model.scale.setScalar(s);
+  group.add(model);
+  group.userData.fromBase = true;
+  return group;
+}
+
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 function parseRGBA(hex) {
@@ -346,6 +405,7 @@ export function buildGlassesFromAsset(asset, opts = {}) {
   const group = buildWearable(asset, opts, { frameMat, lensMat });
   group.userData.frameMat = frameMat;
   group.userData.lensMat = lensMat;
+  group.userData.spec = eyewearSpec(asset);      // so a Blender base can be fitted later
   group.userData.assetId = asset.id;
   return group;
 }
