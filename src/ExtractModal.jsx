@@ -19,7 +19,7 @@ export default function ExtractModal({ file, onDone, onCancel }) {
   const lmRef = useRef(null);
   const maskRef = useRef(null);         // { mask, width, height } last SAM result
   const [url] = useState(() => URL.createObjectURL(file));
-  const [stage, setStage] = useState('model');   // model | encode | trace | idle | error
+  const [stage, setStage] = useState('model');   // model | sam | encode | trace | idle | error
   const [error, setError] = useState('');
   const [pct, setPct] = useState(0);
   const [secs, setSecs] = useState(0);
@@ -33,6 +33,18 @@ export default function ExtractModal({ file, onDone, onCancel }) {
   const sideRef = useRef(null);
 
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
+
+  // a blob image can finish decoding before React attaches onLoad — then the event never
+  // arrives. And a file the browser cannot decode fires error, not load: without this the
+  // modal sat on "looking for a face" forever with nothing on screen to say why.
+  useEffect(() => {
+    const img = imgRef.current;
+    if (!img) return;
+    if (img.complete) {
+      if (img.naturalWidth > 0) onLoad();
+      else { setError('the browser could not read that image file'); setStage('error'); }
+    }
+  }, []);
 
   useEffect(() => {
     if (stage === 'idle' || stage === 'error') return;
@@ -92,6 +104,7 @@ export default function ExtractModal({ file, onDone, onCancel }) {
   }, [asset]);
 
   const srcRef = useRef('sam');    // 'sam' | 'bg'
+  const poseRef = useRef(null);   // MediaPipe facial transform of the source photo
 
   function imgDataAt(w, h) {
     const c = document.createElement('canvas');
@@ -101,20 +114,26 @@ export default function ExtractModal({ file, onDone, onCancel }) {
     return cx.getImageData(0, 0, w, h);
   }
 
-  function runBuild(imgData, mask, w, h, lm) {
-    const a = buildAsset(imgData, mask, w, h, lm);
+  function runBuild(imgData, mask, w, h, lm, matrix) {
+    const a = buildAsset(imgData, mask, w, h, lm, matrix);
     a.id = 'a' + Date.now();
     a.source = srcRef.current;
     setAsset(a);
     setStage('idle');
   }
 
+  const startedRef = useRef(false);
+
   async function onLoad() {
     const img = imgRef.current;
+    if (!img || startedRef.current) return;      // <img onLoad> can fire more than once
+    startedRef.current = true;
     try {
       setStage('model');
-      const lm = await detectInImage(img).catch(() => null);
+      const det = await detectInImage(img).catch(() => null);
+      const lm = det?.landmarks ?? null;
       lmRef.current = lm;
+      poseRef.current = det?.matrix ?? null;
 
       // background-key path for a plain-background product shot with no face — no SAM.
       const W = Math.min(img.naturalWidth, 720);
@@ -127,12 +146,13 @@ export default function ExtractModal({ file, onDone, onCancel }) {
         setBackend('background key');
         setStage('trace');
         maskRef.current = { mask: fg.mask, width: W, height: H };
-        runBuild(workData, fg.mask, W, H, null);
+        runBuild(workData, fg.mask, W, H, null, null);
         return;
       }
 
       // otherwise: SAM. face landmarks guide the prompts; without a face we prompt a band.
       srcRef.current = 'sam';
+      setStage('sam');
       const { loadSam, embed, pickGlassesPoints } = await sam();
       await loadSam(p => setPct(p));
       setBackend((await sam()).backend);
@@ -155,7 +175,7 @@ export default function ExtractModal({ file, onDone, onCancel }) {
         const seg = await segment(ctxRef.current, points);
         if (stale) return;
         maskRef.current = seg;
-        runBuild(imgDataAt(seg.width, seg.height), seg.mask, seg.width, seg.height, lmRef.current || null);
+        runBuild(imgDataAt(seg.width, seg.height), seg.mask, seg.width, seg.height, lmRef.current || null, poseRef.current);
       } catch (e) { setError(String(e.message || e)); setStage('error'); }
     })();
     return () => { stale = true; };
@@ -198,9 +218,12 @@ export default function ExtractModal({ file, onDone, onCancel }) {
   };
 
   const note = {
+    // one label per real step: "looking for a face" used to stay up through the whole
+    // segmenter download, which made a slow load look like a hang — twice
     model: '01. looking for a face',
-    encode: `02. reading the photo — ${backend}`,
-    trace: srcRef.current === 'bg' ? '03. keying out the background' : '03. tracing the frame outline',
+    sam: `02. loading the segmenter — ${Math.round(pct * 100)}%`,
+    encode: `03. reading the photo — ${backend}`,
+    trace: srcRef.current === 'bg' ? '04. keying out the background' : '04. tracing the frame outline',
     idle: asset
       ? (asset.reason
           ? `couldn't trace a frame (${asset.reason}). click on the glasses to guide it.`
@@ -222,7 +245,8 @@ export default function ExtractModal({ file, onDone, onCancel }) {
         </div>
 
         <div className="cropbox" onClick={addPoint}>
-          <img ref={imgRef} src={url} alt="uploaded" onLoad={onLoad} />
+          <img ref={imgRef} src={url} alt="uploaded" onLoad={onLoad}
+               onError={() => { setError('the browser could not read that image file'); setStage('error'); }} />
           {dots()}
         </div>
 
@@ -236,6 +260,11 @@ export default function ExtractModal({ file, onDone, onCancel }) {
           &nbsp;·&nbsp; colour <span style={{ color: asset.frameColor }}>■</span> {asset.frameColor}
           &nbsp;·&nbsp; lens <span style={{ color: asset.lensColor }}>■</span>
           &nbsp;·&nbsp; rim {(asset.dimensions.rimRatio * 100 | 0)}%
+          {asset.quality?.iou != null && <>
+            &nbsp;·&nbsp; match <b className={asset.quality.iou >= 0.85 ? 'ok' : ''}>
+              {(asset.quality.iou * 100 | 0)}%</b>
+          </>}
+          {asset.quality?.poseWarn && <>&nbsp;·&nbsp; head turned far, size may be off</>}
           &nbsp;·&nbsp; {asset.source === 'bg' ? 'background key' : 'SAM'}
         </p>}
 

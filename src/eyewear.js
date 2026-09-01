@@ -93,10 +93,35 @@ function endPieceOf(rimOuterX, y, rimW) {
 }
 
 /**
+ * Rim thickness as a function of angle, measured between the lens opening and the outer
+ * contour about the same centre. Only the outward half of the circle is trustworthy —
+ * a ray aimed at the nose hits the bridge or the other lens — so the inner sector is
+ * filled with the median and the whole thing is smoothed.
+ */
+export function rimProfileOf(lensPoly, outline, sign, n = 128, fallback = 0.09) {
+  const L = radialProfile(lensPoly, n);
+  const O = radialProfile(outline.map(([x, y]) => [x - L.c[0], y - L.c[1]]), n);
+  const raw = new Float64Array(n), ok = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = TAU * i / n;
+    // outward = away from the other lens; sign is -1 for the left eye, +1 for the right
+    const outward = Math.cos(a) * sign > -0.25;
+    const d = O.r[i] - L.r[i];
+    if (outward && d > 0 && d < L.r[i] * 2) { raw[i] = d; ok[i] = 1; }
+  }
+  const seen = [...raw].filter((_, i) => ok[i]).sort((a, b) => a - b);
+  const med = seen.length ? seen[seen.length >> 1] : fallback;
+  for (let i = 0; i < n; i++) if (!ok[i]) raw[i] = med;
+  return { profile: lowPass(raw, 5), median: med };
+}
+
+/**
  * Measurements → a buildable frame. Everything is symmetric by construction and in
  * the asset's normalised space (frame ≈ 1 wide, y up, origin between the eyes).
  */
 export function eyewearSpec(asset, n = 128) {
+  // buildAsset already fitted one against the photo — use it, do not re-measure
+  if (asset.spec) return asset.spec;
   const g = asset.geometry;
   const { r, cL, cR } = canonicalLens(g.lensL, g.lensR, n);
   let lensW = 0, lensH = 0;

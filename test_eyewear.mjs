@@ -33,3 +33,35 @@ assert.ok(spec.bridge.span > 0, 'bridge spans the gap');
 assert.equal(polyFromProfile(spec.lensR, 0, 0).length, 64);
 
 console.log('ok');
+
+// rim thickness varies around the lens: thick on top, fine underneath
+{
+  const { rimProfileOf } = await import('./src/eyewear.js');
+  const n = 128;
+  const lens = [], outline = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const rl = 0.2;
+    const thick = Math.sin(a) > 0 ? 0.09 : 0.03;      // top heavy
+    lens.push([Math.cos(a) * rl, Math.sin(a) * rl]);
+    outline.push([Math.cos(a) * (rl + thick), Math.sin(a) * (rl + thick)]);
+  }
+  const { profile } = rimProfileOf(lens, outline, -1, n, 0.05);
+  const top = profile[n / 4], bottom = profile[(3 * n) / 4];
+  // smoothed, and half the circle is filled with the median, so the step is softened —
+  // what matters is that thickness follows the angle instead of being one number
+  assert.ok(top > bottom * 1.4, `top rim thicker: ${top.toFixed(3)} vs ${bottom.toFixed(3)}`);
+  assert.ok(top < 0.12 && bottom > 0.015, 'stays near the measured values');
+
+  // a constant-thickness ring stays constant
+  const lens2 = [], out2 = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    lens2.push([Math.cos(a) * 0.2, Math.sin(a) * 0.2]);
+    out2.push([Math.cos(a) * 0.25, Math.sin(a) * 0.25]);
+  }
+  const flat = rimProfileOf(lens2, out2, -1, n, 0.05).profile;
+  const spread = Math.max(...flat) - Math.min(...flat);
+  assert.ok(spread < 0.006, 'uniform rim stays uniform, spread ' + spread.toFixed(4));
+}
+console.log('ok');

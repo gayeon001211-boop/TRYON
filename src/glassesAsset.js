@@ -9,12 +9,38 @@
 // Pure. imageData = { data:Uint8ClampedArray, width, height } at the mask's w*h.
 // Model space: x right, y up, origin between the lenses, frame width ≈ 1.0.
 
+import { decomposeMatrix, eulerFromLandmarks } from './frame.js';
+import { eyewearSpec, rimProfileOf } from './eyewear.js';
+import { rasterSpec, iou, fitSpec, applyFit, shrink, IDENTITY } from './fit.js';
 import {
   largestComponent, connectComponents, fillHoles, morphClose, morphOpen, detectHoles,
   traceContour, simplify, smoothRing, dilate, polyBBox, polyArea, normalisePoly,
 } from './contour.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+/**
+ * Yaw/pitch of the face in the source photo, and the factors that undo the
+ * foreshortening they cause. Beyond ~35 deg the flat-plane assumption breaks down, so
+ * we stop correcting and say so instead of inventing a number.
+ */
+export function headPose(matrix, landmarks) {
+  let yaw = 0, pitch = 0, from = 'none';
+  if (matrix) {
+    const e = decomposeMatrix(matrix);
+    yaw = e.ry; pitch = e.rx; from = 'matrix';
+  } else if (landmarks && landmarks[1] && landmarks[33] && landmarks[263]) {
+    const e = eulerFromLandmarks(landmarks);
+    yaw = e.yaw; pitch = e.pitch; from = 'landmarks';
+  }
+  const LIMIT = 35 * Math.PI / 180;
+  const wild = Math.abs(yaw) > LIMIT || Math.abs(pitch) > LIMIT;
+  return {
+    yaw, pitch, from, wild,
+    kx: wild ? 1 : 1 / Math.max(0.55, Math.cos(yaw)),
+    ky: wild ? 1 : 1 / Math.max(0.55, Math.cos(pitch)),
+  };
+}
 const px = (img, x, y) => { const i = (y * img.width + x) * 4; return [img.data[i], img.data[i + 1], img.data[i + 2]]; };
 const luma = c => (c[0] * 299 + c[1] * 587 + c[2] * 114) / 1000;
 const dist2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
@@ -160,7 +186,7 @@ function colourHoles(mask, img, w, h, frameRGB, ob) {
     .sort((a, b) => b.area - a.area).slice(0, 4);
 }
 
-export function buildAsset(img, mask, w, h, landmarks) {
+export function buildAsset(img, mask, w, h, landmarks, faceMatrix) {
   const stages = {};
   const fail = reason => ({
     ok: false, reason,
@@ -252,9 +278,14 @@ export function buildAsset(img, mask, w, h, landmarks) {
   const lb = polyBBox(lensLpx), rb = polyBBox(lensRpx);
   const centre = { x: (lb.cx + rb.cx) / 2, y: (lb.cy + rb.cy) / 2 };
   const scale = ob.w;
-  const outline = normalisePoly(outlinePx, centre, scale);
-  const lensL = normalisePoly(lensLpx, centre, scale);
-  const lensR = normalisePoly(lensRpx, centre, scale);
+  // yaw squeezes x and pitch squeezes y in the photo. Normalising by the observed width
+  // cancels the x part, so the whole correction lands on y as one factor.
+  const pose = headPose(faceMatrix, landmarks);
+  const yk = pose.ky / pose.kx;
+  const unskew = poly => poly.map(([x, y]) => [x, y * yk]);
+  const outline = unskew(normalisePoly(outlinePx, centre, scale));
+  const lensL = unskew(normalisePoly(lensLpx, centre, scale));
+  const lensR = unskew(normalisePoly(lensRpx, centre, scale));
 
 
   const near = outline.filter(([, y]) => Math.abs(y) < 0.14);
@@ -267,7 +298,9 @@ export function buildAsset(img, mask, w, h, landmarks) {
   const bYs = [...lensL, ...lensR].filter(p => p[0] > lInner - 0.05 && p[0] < rInner + 0.05).map(p => p[1]);
   const bridge = { x: (lInner + rInner) / 2, yTop: bYs.length ? Math.max(...bYs) : 0.1, width: Math.max(0.04, rInner - lInner) };
 
-  // 6. dimensions
+  // 6. dimensions — corrected for how the head was turned when the photo was taken.
+  //    A frame photographed at 25 deg of yaw measures ~9% narrow; we were recording that
+  //    foreshortening as the frame's real proportion.
   const lensWpx = (lb.w + rb.w) / 2;
   const rimRatio = measureRim(outlinePx, lensLpx.concat(lensRpx), lensWpx);
   const dimensions = {
@@ -306,16 +339,36 @@ export function buildAsset(img, mask, w, h, landmarks) {
     const eyeMidY = ((landmarks[33].y + landmarks[263].y) / 2) * h;
     if (eyeSpan > 1) {
       spanRatio = +clamp(ob.w / eyeSpan, 1.30, 1.90).toFixed(3);
-      yRatio = +clamp((ob.cy - eyeMidY) / eyeSpan, -0.15, 0.10).toFixed(3);
+      yRatio = +clamp(((ob.cy - eyeMidY) / eyeSpan) * yk, -0.15, 0.10).toFixed(3);
     }
   }
 
   const score = clamp((hasHoles ? 0.5 : 0.25) + (shapeLooksRight ? 0.35 : 0)
     + 0.15 * (1 - Math.abs(dimensions.aspect - 2.6) / 3), 0.1, 1);
 
+  // 8. fit: draw what we just built, compare it with what we saw, and refine.
+  //    Without this the pipeline is one-way and a wrong measurement goes unnoticed.
+  let spec = null, matchIoU = null;
+  try {
+    // per-angle rim: measured off the trace, so a frame that is thick on top stays so
+    const rp = rimProfileOf(lensL, outline, -1, 128, dimensions.rimRatio);
+    const base = { ...eyewearSpec({ geometry: { lensL, lensR }, dimensions }),
+                   rimProfile: rp.profile };
+    const small = shrink(joined, w, h, 256);
+    const tf = {
+      cx: (centre.x - 0) * small.scale, cy: centre.y * small.scale, scale: scale * small.scale,
+    };
+    const before = iou(rasterSpec(base, IDENTITY, tf, small.width, small.height), small.mask);
+    const fitted = fitSpec(base, small.mask, small.width, small.height, tf, { rounds: 8 });
+    spec = applyFit(base, fitted.params);
+    matchIoU = fitted.iou;
+    stages.fitBefore = +before.toFixed(4);
+  } catch { /* a fit failure must not lose the frame we already measured */ }
+
   return {
     // geometry is always the real trace; `ok` just says "confident enough not to nag"
     ok: hasHoles && shapeLooksRight,
+    spec,
     lowConfidence: !(hasHoles && shapeLooksRight),
     geometry: { outline, lensL, lensR, bridge, hingeL, hingeR },
     dimensions, frameColor, lensColor, lensOpacity,
@@ -323,7 +376,8 @@ export function buildAsset(img, mask, w, h, landmarks) {
     quality: {
       hasHoles, shapeLooksRight, contourPoints: outline.length,
       lensPoints: lensL.length + lensR.length, maskAreaFrac: +areaFrac.toFixed(4),
-      pairOk: pair.ok, pairRatio: pair.ratio,
+      pairOk: pair.ok, pairRatio: pair.ratio, iou: matchIoU,
+      yaw: +pose.yaw.toFixed(3), poseFrom: pose.from, poseWarn: pose.wild,
       score: +score.toFixed(2),
     },
     stages,

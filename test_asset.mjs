@@ -158,3 +158,24 @@ console.log('ok');
   assert.equal(pairBalance(oneSided, w, h, lm).ok, false, 'a single blob is not a frame');
 }
 console.log('ok');
+
+// --- head pose: a photo taken at an angle measures short, and we undo that ---
+{
+  const { headPose } = await import('./src/glassesAsset.js');
+  const straight = headPose(null, null);
+  assert.equal(straight.kx, 1); assert.equal(straight.ky, 1);
+  assert.equal(straight.from, 'none');
+
+  // landmarks of a head turned to one side: nose off the eye midpoint
+  const lm = [];
+  lm[1] = { x: 0.56, y: 0.5 }; lm[33] = { x: 0.45, y: 0.5 }; lm[263] = { x: 0.62, y: 0.5 };
+  lm[10] = { x: 0.53, y: 0.3 }; lm[152] = { x: 0.53, y: 0.75 };
+  const turned = headPose(null, lm);
+  assert.equal(turned.from, 'landmarks');
+  assert.ok(turned.kx > 1.01, 'a turned head widens the correction, kx ' + turned.kx.toFixed(3));
+
+  // and a wildly turned head is reported, not corrected with a made-up number
+  const wild = headPose(null, { ...lm, 1: { x: 0.95, y: 0.5 } });
+  assert.ok(wild.kx >= 1);
+}
+console.log('ok');

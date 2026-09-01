@@ -47,7 +47,12 @@ export function drawAssetFront(ctx, asset, opts = {}) {
   const spec = specOf(asset);
   const rimW = spec.rimW * thickness;
   const lens = polyFromProfile(spec.lensR, 0, 0);
-  const outer = polyFromProfile(spec.lensR, 0, 0, rimW);
+  const outer = spec.rimProfile
+    ? Array.from(spec.lensR, (r, i) => {              // typed-array .map would give NaN
+        const ang = (Math.PI * 2 * i) / spec.n, d = r + spec.rimProfile[i] * thickness;
+        return [Math.cos(ang) * d, Math.sin(ang) * d];
+      })
+    : polyFromProfile(spec.lensR, 0, 0, rimW);
 
   ctx.save();
   ctx.lineJoin = ctx.lineCap = 'round';

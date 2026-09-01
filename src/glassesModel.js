@@ -93,7 +93,17 @@ function templeMesh(hinge, sign, mat, dim, thickness) {
 /** A rim: the lens opening cut out of an outward offset of itself, extruded and rounded. */
 function rimMesh(spec, cx, mat) {
   const inner = polyFromProfile(spec.lensR, 0, 0);
-  const outer = polyFromProfile(spec.lensR, 0, 0, spec.rimW);
+  // rimProfile carries the thickness per angle, so a frame that is heavy on top and
+  // fine underneath stays that way instead of becoming a uniform band
+  // Array.from, not lensR.map — lensR is a Float64Array and .map on one coerces each
+  // [x, y] back to a number, which quietly fills the polygon with NaN
+  const outer = spec.rimProfile
+    ? Array.from(spec.lensR, (r, i) => {
+        const a = (Math.PI * 2 * i) / spec.n;
+        const d = r + spec.rimProfile[i];
+        return [Math.cos(a) * d, Math.sin(a) * d];
+      })
+    : polyFromProfile(spec.lensR, 0, 0, spec.rimW);
   const shape = shapeFromPoly(outer);
   shape.holes = [pathFromPoly([...inner].reverse())];
   const d = spec.depth;
