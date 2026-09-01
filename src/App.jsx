@@ -152,6 +152,24 @@ export default function App() {
 
       <main>
         <aside className="left">
+          {/* the flow, in order, so a first-time screen is not twelve sliders at once */}
+          <ol className="steps">
+            {[
+              { k: 'cam', n: 1, label: 'turn on the camera', done: status === 'on' },
+              { k: 'face', n: 2, label: profile ? `face measured — ${profile.faceWidthMm}mm` : 'measure your face',
+                done: Boolean(profile), skip: 'optional, but sizes everything' },
+              { k: 'frame', n: 3, label: 'upload a pair of glasses', done: frames.some(f => f.user) },
+            ].map((s, i, all) => {
+              const active = !s.done && all.slice(0, i).every(p => p.done || p.skip);
+              return (
+                <li key={s.k} className={(s.done ? 'done' : '') + (active ? ' now' : '')}>
+                  <b>{s.done ? '✓' : s.n}</b>
+                  <span>{s.label}{!s.done && s.skip && <i> · {s.skip}</i>}</span>
+                </li>
+              );
+            })}
+          </ol>
+
           <h2>my frames</h2>
           <div className="frames">
             {frames.map(f => (
@@ -176,6 +194,10 @@ export default function App() {
             <button className="big ghost" onClick={() => fileInput.current.click()}>+ upload image</button>
           </div>
           {comparing && <p className="hint">comparing 2 frames — split view. tap A/B to clear.</p>}
+          <p className="hint guide">
+            works best: a product shot on a plain background. a photo of someone wearing
+            them works too. avoid busy backgrounds and heavy shadows.
+          </p>
           <input ref={fileInput} type="file" accept="image/*" hidden
                  onChange={e => { setFile(e.target.files[0]); e.target.value = ''; }} />
         </aside>
@@ -186,6 +208,16 @@ export default function App() {
           <canvas ref={glCanvasRef} className={'cgl' + (mode === '3d' && !comparing ? '' : ' off')} />
           {status === 'on' ? <>
             {!faceFound && <span className="hint float">looking for a face…</span>}
+            {/* the next step, offered where the user is actually looking */}
+            {faceFound && !profile && (
+              <div className="nudge">
+                <b>measure your face</b>
+                <span>look straight ahead — one second, and every frame gets sized to your head</span>
+                <button className="tiny" onClick={measureMe} disabled={measuring}>
+                  {measuring ? 'hold still…' : 'measure'}
+                </button>
+              </div>
+            )}
             <div className="stagebar">
               <button onClick={flip} title="flip camera">⟲ {facing === 'user' ? 'front' : 'back'}</button>
               <button onClick={autoFit} disabled={!faceFound}>auto fit</button>

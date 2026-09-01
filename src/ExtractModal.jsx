@@ -234,7 +234,7 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
     // one label per real step: "looking for a face" used to stay up through the whole
     // segmenter download, which made a slow load look like a hang — twice
     model: '01. looking for a face',
-    sam: `02. loading the segmenter — ${Math.round(pct * 100)}%`,
+    sam: `02. loading the segmenter — ${Math.round(pct * 100)}% · 40 MB, first upload only`,
     encode: `03. reading the photo — ${backend}`,
     trace: srcRef.current === 'bg' ? '04. keying out the background' : '04. tracing the frame outline',
     idle: asset
@@ -243,13 +243,13 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
           : asset.ok
             ? `frame traced — ${asset.geometry.outline.length} outline points, lens openings ${asset.quality.hasHoles ? 'found' : 'estimated'}`
             : `traced, but low confidence (${!asset.quality.hasHoles ? 'lens openings estimated' : 'unusual outline'}). check the preview, adjust on the right, or click to guide the mask.`)
-      : 'no result yet — click on the glasses.',
-    error: 'it broke: ' + error,
+      : 'no result yet — click on the glasses, or cancel and try a clearer photo.',
+    error: `it broke: ${error}. try another photo — a product shot on a plain background is the easy case.`,
   }[stage];
 
   return (
     <div className="overlay">
-      <div className="panel">
+      <div className="panel tall">
         <h2>{stage === 'idle' ? 'extracted frame' : stage === 'error' ? 'that did not work' : 'extracting your frame'}</h2>
         <p className="hint">{note} {stage !== 'idle' && stage !== 'error' && <b>{secs.toFixed(1)}s</b>}</p>
         <div className="bar">
@@ -257,6 +257,7 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
              style={{ width: stage === 'model' ? `${pct * 100}%` : '100%' }} />
         </div>
 
+        <div className="scroller">
         <div className="cropbox" onClick={addPoint}>
           <img ref={imgRef} src={url} alt="uploaded" onLoad={onLoad}
                onError={() => { setError('the browser could not read that image file'); setStage('error'); }} />
@@ -268,7 +269,9 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
           <figure><canvas ref={tqRef} width={200} height={110} /><figcaption>3/4</figcaption></figure>
           <figure><canvas ref={sideRef} width={200} height={110} /><figcaption>side</figcaption></figure>
         </div>
-        {asset && !asset.reason && <p className="hint">
+        </div>
+
+        {asset && !asset.reason && <p className="hint summary">
           {asset.ok ? <span className="ok">✓ frame detected</span> : <span>~ low confidence</span>}
           &nbsp;·&nbsp; colour <span style={{ color: asset.frameColor }}>■</span> {asset.frameColor}
           &nbsp;·&nbsp; lens <span style={{ color: asset.lensColor }}>■</span>
@@ -294,7 +297,7 @@ export default function ExtractModal({ file, profile, onDone, onCancel }) {
         )}
         {showDebug && asset && <DebugView asset={asset} img={imgRef.current} mask={maskRef.current} points={points} />}
 
-        <div className="row">
+        <div className="row actions">
           <button className="big" disabled={!asset || stage !== 'idle'} onClick={use}>add to my frames</button>
           <button className="big ghost" onClick={onCancel}>cancel</button>
         </div>

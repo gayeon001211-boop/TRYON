@@ -78,8 +78,14 @@ input[type=range] { width:100%; accent-color:var(--hot); }
 
 .overlay { position:fixed; inset:0; background:#0b0b0ce6; display:flex; align-items:center; justify-content:center; padding:24px; z-index:10; }
 .panel { border:1px solid var(--line); background:var(--bg); padding:20px; max-width:min(94vw,820px); max-height:92vh; overflow:auto; }
+/* header and actions stay put; only the middle scrolls, so "add to my frames" is never
+   below the fold — it was, on a laptop, with a tall source photo */
+.panel.tall { display:flex; flex-direction:column; overflow:hidden; }
+.panel.tall .scroller { flex:1; min-height:0; overflow:auto; }
+.panel.tall .summary { margin-top:12px; }
+.panel.tall .actions { margin-top:10px; padding-top:14px; border-top:1px solid var(--line); }
 .cropbox { position:relative; display:inline-block; cursor:crosshair; margin:14px 0; touch-action:none; }
-.cropbox img { max-width:100%; max-height:52vh; display:block; }
+.cropbox img { max-width:100%; max-height:34vh; display:block; }   /* the source is reference, not the subject */
 .bar { height:6px; background:var(--line); margin:4px 0 12px; }
 .bar i { display:block; height:100%; background:var(--hot); transition:width .35s linear; }
 .preview { background:repeating-conic-gradient(#1a1a1c 0 25%,#111 0 50%) 0 0/16px 16px;
@@ -127,3 +133,21 @@ input[type=range] { width:100%; accent-color:var(--hot); }
 .profile label { display:flex; align-items:center; gap:6px; color:var(--dim); font-size:10px; }
 .profile input { width:58px; background:#000; color:var(--fg); border:1px solid var(--line);
                  font:inherit; padding:2px 4px; }
+
+/* onboarding steps — the three things to do, in order */
+.steps { list-style:none; margin:0 0 16px; padding:0; display:grid; gap:4px; }
+.steps li { display:flex; gap:8px; align-items:baseline; color:var(--dim); font-size:10px; line-height:1.5; }
+.steps li b { flex:none; width:16px; height:16px; border:1px solid var(--line); border-radius:50%;
+              display:grid; place-items:center; font-size:9px; font-weight:400; }
+.steps li.now { color:var(--fg); }
+.steps li.now b { border-color:var(--hot); color:var(--hot); }
+.steps li.done { color:var(--dim); }
+.steps li.done b { border-color:#3f5a1f; color:var(--hot); }
+.steps li i { font-style:normal; opacity:.7; }
+.nudge { position:absolute; top:16px; left:50%; transform:translateX(-50%);
+         background:#0b0b0ce8; border:1px solid var(--line); padding:10px 14px;
+         display:flex; align-items:center; gap:12px; max-width:min(92%,560px); }
+.nudge b { color:var(--hot); }
+.nudge span { color:var(--dim); font-size:10px; }
+.nudge button { flex:none; }
+.guide { margin-top:8px; line-height:1.6; }
