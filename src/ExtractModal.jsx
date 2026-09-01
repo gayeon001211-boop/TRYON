@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { detectInImage } from './extract.js';
 import { buildAsset, foregroundFromBackground } from './glassesAsset.js';
 import { drawAssetFront } from './assetRender.js';
+import { eyewearSpec } from './eyewear.js';
+import { frameSpecMm, placementFor } from './faceProfile.js';
 
 const sam = () => import('./segment.js');
 const model3d = () => import('./glassesModel.js');
@@ -13,7 +15,7 @@ const three = () => import('three');
  * → ADD TO MY FRAMES. Shape/rim/colour are tuned afterwards on the main screen.
  * Bad mask? click the frame to add a point, alt-click to exclude.
  */
-export default function ExtractModal({ file, onDone, onCancel }) {
+export default function ExtractModal({ file, profile, onDone, onCancel }) {
   const imgRef = useRef(null);
   const ctxRef = useRef(null);
   const lmRef = useRef(null);
@@ -116,6 +118,17 @@ export default function ExtractModal({ file, onDone, onCancel }) {
 
   function runBuild(imgData, mask, w, h, lm, matrix) {
     const a = buildAsset(imgData, mask, w, h, lm, matrix);
+    // measured wearer? then the frame is sized and placed against that head instead of
+    // against whatever face happened to be in the reference photo
+    if (profile && !a.reason) {
+      const spec = eyewearSpec(a);
+      const place = placementFor(profile, spec);
+      if (place) a.placement = place;
+      a.sizeMm = frameSpecMm(spec, profile);
+      if (a.sizeMm) {
+        a.dimensions = { ...a.dimensions, templeLen: +(profile.templeLenMm / a.sizeMm.frontMm).toFixed(3) };
+      }
+    }
     a.id = 'a' + Date.now();
     a.source = srcRef.current;
     setAsset(a);
@@ -260,6 +273,10 @@ export default function ExtractModal({ file, onDone, onCancel }) {
           &nbsp;·&nbsp; colour <span style={{ color: asset.frameColor }}>■</span> {asset.frameColor}
           &nbsp;·&nbsp; lens <span style={{ color: asset.lensColor }}>■</span>
           &nbsp;·&nbsp; rim {(asset.dimensions.rimRatio * 100 | 0)}%
+          {asset.sizeMm && <>
+            &nbsp;·&nbsp; <b>{asset.sizeMm.label}</b>
+            &nbsp;·&nbsp; <span className={asset.sizeMm.fit === 'good' ? 'ok' : ''}>{asset.sizeMm.fit} for your face</span>
+          </>}
           {asset.quality?.iou != null && <>
             &nbsp;·&nbsp; match <b className={asset.quality.iou >= 0.85 ? 'ok' : ''}>
               {(asset.quality.iou * 100 | 0)}%</b>

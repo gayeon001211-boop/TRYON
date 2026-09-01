@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTryOn } from './useTryOn.js';
 import { smartFit } from './frame.js';
+import { measureFace, averageProfile, withPd, DEFAULT_PD_MM } from './faceProfile.js';
 import { PRESETS } from './presets.js';
 import ExtractModal from './ExtractModal.jsx';
 import Thumb from './Thumb.jsx';
@@ -38,6 +39,9 @@ export default function App() {
   const comparing = compareIds.length === 2;
   const compareFrames = comparing ? compareIds.map(id => frames.find(f => f.id === id)).filter(Boolean) : null;
 
+  const [profile, setProfile] = useState(null);      // the wearer, measured — the ruler
+  const [measuring, setMeasuring] = useState(false);
+
   const paramsRef = useRef(null);
   paramsRef.current = {
     frame, opts, fit, worn, mode,
@@ -53,12 +57,13 @@ export default function App() {
     if (!saved) return;
     if (saved.frames?.length) setFrames([...presetFrames, ...saved.frames]);
     if (saved.settings?.mode) setMode(saved.settings.mode);
+    if (saved.settings?.faceProfile) setProfile(saved.settings.faceProfile);
   }, []);   // eslint-disable-line
 
   useEffect(() => {
     if (!hydrated.current) return;
-    save(frames, { mode });
-  }, [frames, mode]);
+    save(frames, { mode, faceProfile: profile });
+  }, [frames, mode, profile]);
 
   const pickFrame = id => { setActiveId(id); setFit(DEFAULT_FIT); };
 
@@ -84,6 +89,20 @@ export default function App() {
   const applyPresetShape = id => {
     const pr = PRESETS.find(p => p.id === id);
     if (pr) patch({ asset: { ...frame.asset, geometry: pr.asset.geometry, dimensions: { ...frame.asset.dimensions, aspect: pr.asset.dimensions.aspect } } });
+  };
+
+  /** Watch the face for a moment and take the median — one frame jitters by millimetres. */
+  const measureMe = async () => {
+    setMeasuring(true);
+    const shots = [];
+    for (let i = 0; i < 30; i++) {
+      const { lm, size } = sample();
+      if (lm && size.w) shots.push(measureFace(lm, size.w, size.h, profile?.pdMm ?? DEFAULT_PD_MM));
+      await new Promise(r => setTimeout(r, 40));
+    }
+    const p = averageProfile(shots);
+    setMeasuring(false);
+    if (p) setProfile(p);
   };
 
   const autoFit = () => {
@@ -180,6 +199,40 @@ export default function App() {
         </div>
 
         <aside className="right">
+          <h2>my face</h2>
+          {profile ? (
+            <div className="profile">
+              <p>
+                <b>{profile.faceWidthMm}mm</b> wide · temple <b>{profile.templeLenMm}mm</b>
+              </p>
+              <label>
+                pd <input type="number" min="50" max="80" step="0.5" value={profile.pdMm}
+                          onChange={e => setProfile(withPd(profile, +e.target.value || DEFAULT_PD_MM))} /> mm
+              </label>
+              <p className="hint">
+                {profile.pdMm === DEFAULT_PD_MM ? 'pd is the adult average — put yours in for real sizes'
+                                                : 'sized to your pd'}
+              </p>
+              <div className="row">
+                <button className="tiny ghost" onClick={measureMe} disabled={!faceFound || measuring}>
+                  measure again
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="row">
+                <button className="tiny" onClick={measureMe} disabled={!faceFound || measuring}>
+                  {measuring ? 'hold still…' : 'measure my face'}
+                </button>
+              </div>
+              <p className="hint">
+                {faceFound ? 'measure once and uploaded frames get sized to your head'
+                           : 'turn on the camera and look straight ahead'}
+              </p>
+            </>
+          )}
+
           <h2>fit</h2>
           {slider('w', 'width', 0.6, 1.6, 0.01, v => v.toFixed(2) + '×')}
           {slider('h', 'height', 0.6, 1.6, 0.01, v => v.toFixed(2) + '×')}
@@ -238,7 +291,7 @@ export default function App() {
         </div>
       )}
 
-      {file && <ExtractModal file={file} onDone={addFrame} onCancel={() => setFile(null)} />}
+      {file && <ExtractModal file={file} profile={profile} onDone={addFrame} onCancel={() => setFile(null)} />}
       {sheet && (
         <div className="overlay" onClick={() => setSheet(null)}>
           <div className="panel" onClick={e => e.stopPropagation()}>

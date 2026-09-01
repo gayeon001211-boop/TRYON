@@ -20,6 +20,24 @@ npm run build
   `getUserMedia` 오버라이드해서 테스트. 단 SlimSAM은 합성 이미지(플랫 일러스트)를 잘 못 잡으니
   추출 정확도는 **실제 안경 사진**으로 검증해야 함.
 
+## 얼굴 프로필 (2026-09-01 추가)
+
+카메라로 착용자를 먼저 재고(`MEASURE MY FACE`), 그 치수를 자로 삼아 업로드한 프레임을 측정한다.
+
+```
+카메라 ON → measureFace(랜드마크 30프레임) → averageProfile(중앙값) → settings에 저장
+  mmPerPx = PD(기본 63mm, 사용자 수정 가능) / 홍채간 거리
+  faceWidthMm · browAboveEyeMm · bridgeDropMm · templeLenMm
+업로드 시 프로필이 있으면:
+  프레임 전체 폭 = 얼굴폭 × 0.98  → 렌즈/브리지/림이 mm를 얻음 (`52 □ 18 − 145` 표기)
+  placement(spanRatio·yRatio) = 이 얼굴의 PD·눈썹선에서 (레퍼런스 사진 얼굴 대신)
+  templeLen = 측정된 귀까지 거리 (더 이상 추정값 아님)
+프로필이 없으면 이전 동작 그대로.
+```
+
+★ PD 63mm는 **가정값**이다. 처방전 PD를 넣으면 전부 선형으로 정확해진다.
+★ MediaPipe z가 상대값이라 `templeLenMm` 오차가 가장 크다.
+
 ## 파이프라인 (현재)
 
 ```
@@ -61,6 +79,8 @@ npm run build
 |---|---|
 | `src/contour.js` | 순수: largestComponent(minRatio), connectComponents, fillHoles, morph, detectHoles, traceContour, simplify(DP), poly helpers |
 | `src/glassesAsset.js` | 순수: `buildAsset` → GlassesAsset. `foregroundFromBackground`, 회전 `bandCrop`, `pairBalance`. 색·형태 분석 |
+| `src/faceProfile.js` | 순수: `measureFace`/`averageProfile`/`withPd`/`frameSpecMm`/`placementFor` — 착용자 측정 |
+| `src/fit.js` | 순수: `rasterSpec`/`iou`/`fitSpec`/`applyFit` — 만든 모델을 원본 마스크와 대조해 파라미터 보정 |
 | `src/eyewear.js` | 순수: 측정값 → 착용 가능한 프레임 스펙 (`radialProfile`/`lowPass`/`canonicalLens`/`eyewearSpec`) |
 | `src/assetRender.js` | 2D 캔버스: `drawAssetFront`, `drawAssetAtPose`, `assetThumb` |
 | `src/glassesModel.js` | Three.js: `buildGlassesFromAsset` (extrude + 텍스처 plane + 렌즈 + temple) |

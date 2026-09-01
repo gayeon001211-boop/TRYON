@@ -106,6 +106,7 @@ export function useTryOn(paramsRef) {
       r.lm = m;
       r.pose = poseFromEyes(m[33], m[263], c.width, c.height);
       r.pose.yaw = (m[1].x * c.width - r.pose.cx) / r.pose.eyeSpan;
+      r.matrix = res?.facialTransformationMatrixes?.[0]?.data ?? null;   // kept for measuring
       const e = eulerFromLandmarks(m);
       r.euler.yaw += (e.yaw - r.euler.yaw) * 0.4;
       r.euler.pitch += (e.pitch - r.euler.pitch) * 0.4;
@@ -169,7 +170,8 @@ export function useTryOn(paramsRef) {
   }
 
   function contactSheet() { return run.current.layer?.contactSheet?.() ?? null; }
-  const sample = () => ({ lm: run.current.lm, pose: run.current.pose });
+  const sample = () => ({ lm: run.current.lm, pose: run.current.pose, matrix: run.current.matrix,
+                          size: { w: canvasRef.current?.width || 0, h: canvasRef.current?.height || 0 } });
 
   return { videoRef, canvasRef, glCanvasRef, status, faceFound, facing, start, flip, snapshot, contactSheet, sample };
 }
